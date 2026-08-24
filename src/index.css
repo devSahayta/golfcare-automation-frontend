@@ -1,1 +1,22 @@
 @import "tailwindcss";
+
+@theme {
+  /* Fairway green — primary brand color. Deep, established, trustworthy. */
+  --color-fairway-50: #f2f7f4;
+  --color-fairway-100: #dfeee6;
+  --color-fairway-200: #b9dcc8;
+  --color-fairway-300: #8cc3a4;
+  --color-fairway-400: #5da47d;
+  --color-fairway-500: #3d8562;
+  --color-fairway-600: #2c6b4c;
+  --color-fairway-700: #23543d;
+  --color-fairway-800: #1c4231;
+  --color-fairway-900: #16352a;
+  --color-fairway-950: #0c1f19;
+
+  /* Gold — accent for premium/concierge moments (CTAs, highlights). */
+  --color-gold-300: #ecd48f;
+  --color-gold-400: #ddbd61;
+  --color-gold-500: #c9a227;
+  --color-gold-600: #a9841f;
+}
