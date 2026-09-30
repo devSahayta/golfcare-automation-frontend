@@ -1,6 +1,4 @@
-// src/App.jsx
-
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useKindeAuth } from "@kinde-oss/kinde-auth-react";
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -22,24 +20,67 @@ function Placeholder({ name }) {
   return <div className="text-gray-500">{name} — coming soon</div>;
 }
 
+function NoAccountScreen() {
+  const { logout } = useKindeAuth();
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-white px-6 text-center">
+      <p className="text-lg font-semibold text-gray-900">No account found</p>
+      <p className="max-w-sm text-sm text-gray-500">
+        This email isn't set up as Golf Care staff yet. Ask an admin to add you,
+        then try signing in again.
+      </p>
+      <button
+        onClick={() => logout()}
+        className="mt-2 rounded-lg bg-fairway-900 px-4 py-2 text-sm font-medium text-white hover:bg-fairway-800"
+      >
+        Back to login
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const { isAuthenticated, user, getToken } = useKindeAuth();
+  // null = not checked yet, true/false once we know
+  const [staffOk, setStaffOk] = useState(null);
 
-  // Register the token getter as soon as we know the user's authenticated —
-  // every request now pulls a fresh token itself (see apiClient.js), so
-  // nothing has to wait on this effect finishing before it's safe to fetch.
   useEffect(() => {
     if (isAuthenticated) {
       registerTokenGetter(getToken);
     }
   }, [isAuthenticated, getToken]);
 
-  // Sync staff user on first login
+  // Sync staff user on login. The backend now REJECTS (403) any email that
+  // isn't already a pre-provisioned StaffUser — it never creates one on the
+  // fly. So this call is the actual access gate, not just a data sync.
   useEffect(() => {
-    if (isAuthenticated && user) {
-      addUserToBackend(user);
-    }
+    if (!isAuthenticated || !user) return;
+
+    let cancelled = false;
+    addUserToBackend(user)
+      .then(() => {
+        if (!cancelled) setStaffOk(true);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err?.response?.status === 403) {
+          setStaffOk(false);
+        } else {
+          // Unexpected error (network, 500) — don't silently lock the
+          // person out; let them through and surface the failure elsewhere.
+          console.error("Staff sync failed:", err);
+          setStaffOk(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isAuthenticated, user]);
+
+  if (isAuthenticated && staffOk === false) {
+    return <NoAccountScreen />;
+  }
 
   return (
     <BrowserRouter>
