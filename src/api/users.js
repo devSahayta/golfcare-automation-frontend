@@ -9,6 +9,6 @@ export const addUserToBackend = (user) =>
     familyName: user?.familyName,
   });
 
-export const fetchUsers = () => api.get("/api/users");
+export const fetchUsers = (params = {}) => api.get("/api/users", { params });
 
 export const fetchUserById = (id) => api.get(`/api/users/${id}`);
