@@ -10,6 +10,7 @@ import {
   MegaphoneIcon,
   ReceiptIcon,
   ClipboardListIcon,
+  SparkIcon,
   // SparkIcon,
   SettingsIcon,
   CloseIcon,
@@ -17,7 +18,7 @@ import {
 
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard", icon: HomeIcon, end: true },
-  { to: "/activity", label: "Message Activity", icon: BellIcon },
+  { to: "/activity", label: "Activity", icon: BellIcon },
   { to: "/products", label: "Products", icon: BagIcon },
   { to: "/orders", label: "Orders", icon: ReceiptIcon },
   { to: "/customers", label: "Customers", icon: UsersIcon },
@@ -30,6 +31,7 @@ const NAV_ITEMS = [
   },
   // { to: "/insights", label: "Insights", icon: SparkIcon, comingSoon: true },
   { to: "/audit-log", label: "Audit Log", icon: ClipboardListIcon },
+  { to: "/agent-usage", label: "Agent Usage", icon: SparkIcon },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

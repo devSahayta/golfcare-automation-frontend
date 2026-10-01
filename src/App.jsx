@@ -11,6 +11,7 @@ import Customers from "./pages/Customers";
 import Products from "./pages/Products";
 import Suppliers from "./pages/Suppliers";
 import AuditLog from "./pages/AuditLog";
+import AgentUsage from "./pages/AgentUsage";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 import { registerTokenGetter } from "./api/apiClient";
@@ -105,6 +106,7 @@ export default function App() {
           />
           {/* <Route path="/insights" element={<Placeholder name="Insights" />} /> */}
           <Route path="/audit-log" element={<AuditLog />} />
+          <Route path="/agent-usage" element={<AgentUsage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
         </Route>
