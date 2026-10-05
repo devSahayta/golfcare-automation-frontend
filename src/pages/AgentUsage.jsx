@@ -19,7 +19,12 @@ import StatCard from "../components/ui/StatCard";
 import Badge from "../components/ui/Badge";
 import { formatDateTime, humanizeAction } from "../lib/format";
 import useDocumentTitle from "../hooks/useDocumentTitle";
-import { SparkIcon, TruckIcon, ChatBubbleIcon } from "../components/icons";
+import {
+  SparkIcon,
+  TruckIcon,
+  ChatBubbleIcon,
+  MegaphoneIcon,
+} from "../components/icons";
 
 const AGENT_TABS = [
   { id: "sales", label: "Sales Agent", icon: ChatBubbleIcon, color: "#2c6b4c" },
@@ -30,6 +35,12 @@ const AGENT_TABS = [
     color: "#c9a227",
   },
   { id: "insights", label: "Insights", icon: SparkIcon, color: "#3b6ea5" },
+  {
+    id: "campaign",
+    label: "Campaign Agent",
+    icon: MegaphoneIcon,
+    color: "#8b5fa8",
+  },
 ];
 
 const AGENT_COLOR = Object.fromEntries(AGENT_TABS.map((t) => [t.id, t.color]));
@@ -51,9 +62,20 @@ function formatTokens(n) {
 }
 
 function outcomeVariant(outcome) {
-  if (outcome === "completed") return "positive";
-  if (outcome === "error") return "danger";
-  if (outcome === "iteration_cap") return "warning";
+  if (outcome === "completed" || outcome === "sent") return "positive";
+  if (
+    outcome === "error" ||
+    outcome === "failed" ||
+    outcome === "rejected" ||
+    outcome === "meta_rejected"
+  )
+    return "danger";
+  if (
+    outcome === "iteration_cap" ||
+    outcome === "pending" ||
+    outcome === "awaiting_approval"
+  )
+    return "warning";
   return "neutral";
 }
 
@@ -207,11 +229,17 @@ function UsageTable({ rows, loading, agent }) {
         <thead>
           <tr className="border-b border-gray-100 text-xs text-gray-400">
             <th className="px-4 py-2.5 font-medium">
-              {agent === "insights" ? "Question" : "Conversation"}
+              {agent === "insights"
+                ? "Question"
+                : agent === "campaign"
+                  ? "Campaign"
+                  : "Conversation"}
             </th>
             <th className="px-4 py-2.5 font-medium">Outcome</th>
             <th className="px-4 py-2.5 font-medium">Tokens</th>
-            <th className="px-4 py-2.5 font-medium">Tools</th>
+            {agent !== "campaign" && (
+              <th className="px-4 py-2.5 font-medium">Tools</th>
+            )}
             <th className="px-4 py-2.5 text-right font-medium">Cost</th>
             <th className="px-4 py-2.5 text-right font-medium">When</th>
           </tr>
@@ -231,7 +259,9 @@ function UsageTable({ rows, loading, agent }) {
                 {formatTokens(row.inputTokens)} in /{" "}
                 {formatTokens(row.outputTokens)} out
               </td>
-              <td className="px-4 py-3 text-gray-500">{row.toolCallCount}</td>
+              {agent !== "campaign" && (
+                <td className="px-4 py-3 text-gray-500">{row.toolCallCount}</td>
+              )}
               <td className="px-4 py-3 text-right text-gray-900">
                 <span className="font-medium">{formatInr(row.costInr)}</span>
                 <span className="ml-1 text-xs text-gray-400">
@@ -347,8 +377,8 @@ export default function AgentUsage() {
   const summaryKey = from || "all";
   const agentKey = `${activeAgent}|${from || "all"}|${page}`;
 
-  // Summary cards + pie chart cover all three agents, independent of
-  // which tab is active.
+  // Summary cards + pie chart cover every agent, independent of which tab
+  // is active.
   useEffect(() => {
     let cancelled = false;
     fetchAgentUsageSummary(from ? { from } : {})
@@ -383,7 +413,8 @@ export default function AgentUsage() {
     };
   }, [activeAgent, from, page, agentKey]);
 
-  const summaryCurrent = summaryResult?.key === summaryKey ? summaryResult : null;
+  const summaryCurrent =
+    summaryResult?.key === summaryKey ? summaryResult : null;
   const summary = summaryCurrent?.data ?? null;
   const summaryError = summaryCurrent?.error ?? false;
 
@@ -409,7 +440,7 @@ export default function AgentUsage() {
     <div>
       <PageHeader
         title="Agent Usage"
-        subtitle="Cost and activity for Sales, Supplier and Insights agents."
+        subtitle="Cost and activity for the Sales, Supplier, Insights and Campaign agents."
         actions={
           <div className="flex rounded-lg border border-gray-200 bg-white p-0.5">
             {RANGE_OPTIONS.map((opt) => (
@@ -430,7 +461,7 @@ export default function AgentUsage() {
       />
 
       {/* Overview: totals across all three agents */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
         <StatCard
           label="Total cost"
           value={totalCostInr !== null ? formatInr(totalCostInr) : undefined}
@@ -518,7 +549,11 @@ export default function AgentUsage() {
         </nav>
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <div
+        className={`mt-4 grid grid-cols-2 gap-4 ${
+          activeAgent === "campaign" ? "sm:grid-cols-3" : "sm:grid-cols-4"
+        }`}
+      >
         <StatCard
           label="Interactions"
           value={agentData?.summary?.totalInteractions?.toLocaleString()}
@@ -540,12 +575,21 @@ export default function AgentUsage() {
           }
           loading={agentLoading}
         />
-        <StatCard
-          label="Tool calls"
-          value={agentData?.summary?.totalToolCalls?.toLocaleString()}
-          loading={agentLoading}
-        />
+        {activeAgent !== "campaign" && (
+          <StatCard
+            label="Tool calls"
+            value={agentData?.summary?.totalToolCalls?.toLocaleString()}
+            loading={agentLoading}
+          />
+        )}
       </div>
+
+      {activeAgent === "campaign" && (
+        <p className="mt-3 text-xs text-gray-400">
+          Campaign cost covers the AI drafting of each template only. WhatsApp /
+          Meta per-message send fees aren't tracked here.
+        </p>
+      )}
 
       {activeAgent === "insights" && (
         <div className="mt-4">
