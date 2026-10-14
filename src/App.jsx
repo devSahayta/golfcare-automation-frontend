@@ -12,14 +12,11 @@ import Products from "./pages/Products";
 import Suppliers from "./pages/Suppliers";
 import AuditLog from "./pages/AuditLog";
 import AgentUsage from "./pages/AgentUsage";
+import Campaigns from "./pages/Campaigns";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 import { registerTokenGetter } from "./api/apiClient";
 import { addUserToBackend } from "./api/users";
-
-function Placeholder({ name }) {
-  return <div className="text-gray-500">{name} — coming soon</div>;
-}
 
 function NoAccountScreen() {
   const { logout } = useKindeAuth();
@@ -100,10 +97,7 @@ export default function App() {
           <Route path="/orders" element={<Orders />} />
           <Route path="/customers" element={<Customers />} />
           <Route path="/suppliers" element={<Suppliers />} />
-          <Route
-            path="/campaigns"
-            element={<Placeholder name="Segments / Campaigns" />}
-          />
+          <Route path="/campaigns" element={<Campaigns />} />
           {/* <Route path="/insights" element={<Placeholder name="Insights" />} /> */}
           <Route path="/audit-log" element={<AuditLog />} />
           <Route path="/agent-usage" element={<AgentUsage />} />

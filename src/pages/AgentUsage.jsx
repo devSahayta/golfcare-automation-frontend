@@ -19,7 +19,7 @@ import StatCard from "../components/ui/StatCard";
 import Badge from "../components/ui/Badge";
 import { formatDateTime, humanizeAction } from "../lib/format";
 import useDocumentTitle from "../hooks/useDocumentTitle";
-import { SparkIcon, TruckIcon, ChatBubbleIcon } from "../components/icons";
+import { SparkIcon, TruckIcon, ChatBubbleIcon, MegaphoneIcon } from "../components/icons";
 
 const AGENT_TABS = [
   { id: "sales", label: "Sales Agent", icon: ChatBubbleIcon, color: "#2c6b4c" },
@@ -29,6 +29,7 @@ const AGENT_TABS = [
     icon: TruckIcon,
     color: "#c9a227",
   },
+  { id: "lifecycle", label: "Lifecycle Agent", icon: MegaphoneIcon, color: "#8a4fae" },
   { id: "insights", label: "Insights", icon: SparkIcon, color: "#3b6ea5" },
 ];
 
