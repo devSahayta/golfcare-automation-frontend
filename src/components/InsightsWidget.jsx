@@ -857,7 +857,7 @@ function CampaignSavedCard({ campaign }) {
         </div>
       </div>
       <button
-        onClick={() => navigate(`/campaigns?id=${campaign.campaignId}`)}
+        onClick={() => navigate(`/broadcast-campaigns?id=${campaign.id}`)}
         style={{
           background: "#16a34a",
           color: "#fff",

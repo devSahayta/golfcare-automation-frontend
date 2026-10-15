@@ -1,301 +1,153 @@
 // src/pages/Campaigns.jsx
 //
-// Fully responsive WhatsApp campaign manager.
-// Mobile: single-column list → tap → full-screen detail (back button).
-// Desktop (lg+): two-panel sidebar + detail.
-//
-// v2 additions:
-//   - Template editor for DRAFT campaigns (Header / Body / Footer / Buttons)
-//   - Live WhatsApp mockup preview
-//   - PATCH /api/campaigns/:id/template to persist template component changes
+// Birthday, replenishment and cross-sell campaigns.
+// Static lanes (Birthday, Replenishment) use pre-approved templates sent by
+// the scheduler. Dynamic lane (Cross-sell) drafts a per-customer template
+// that a human must approve before it goes to Meta.
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useEffect, useState } from "react";
 import {
-  listCampaigns,
-  getCampaign,
-  submitCampaign,
-  sendCampaign,
-  cancelCampaign,
-  updateCampaignTemplate,
+  fetchCampaignSummary,
+  fetchCampaignTemplates,
+  fetchCampaignTriggers,
+  fetchStaticCampaignTemplate,
+  approveCampaignTemplate,
+  rejectCampaignTemplate,
 } from "../api/campaigns";
-import { MegaphoneIcon } from "../components/icons";
+import PageHeader from "../components/ui/PageHeader";
+import StatCard from "../components/ui/StatCard";
+import Badge from "../components/ui/Badge";
+import Drawer from "../components/ui/Drawer";
+import EmptyState from "../components/ui/EmptyState";
+import useDocumentTitle from "../hooks/useDocumentTitle";
+import { formatDate, formatDateTime } from "../lib/format";
+import {
+  MegaphoneIcon,
+  SparkIcon,
+  BagIcon,
+  ReceiptIcon,
+} from "../components/icons";
 
-// ─── date helpers ─────────────────────────────────────────────────────────────
-function fmt(d) {
-  if (!d) return "";
-  try {
-    return new Date(d).toLocaleString("en-IN", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return d;
-  }
+const LIMIT = 20;
+
+// Two lanes, matching the backend design: static lanes send a pre-approved
+// template with no per-message approval; the dynamic lane drafts a one-off
+// template per customer that a human must approve first.
+const SCENARIOS = {
+  BIRTHDAY: {
+    label: "Birthday",
+    lane: "Static",
+    laneHint: "Pre-approved template, sent on the customer's birthday",
+    icon: MegaphoneIcon,
+  },
+  REPLENISHMENT: {
+    label: "Replenishment",
+    lane: "Static",
+    laneHint: "Pre-approved template, sent when a consumable is due again",
+    icon: BagIcon,
+  },
+  CROSS_SELL: {
+    label: "Cross-sell",
+    lane: "Dynamic",
+    laneHint: "AI-drafted per customer, needs your approval first",
+    icon: SparkIcon,
+  },
+};
+
+const STAGES = {
+  AWAITING_APPROVAL: { label: "Awaiting approval", variant: "warning" },
+  REJECTED: { label: "Rejected", variant: "danger" },
+  META_PENDING: { label: "Awaiting Meta review", variant: "info" },
+  META_REJECTED: { label: "Meta rejected", variant: "danger" },
+  SCHEDULED: { label: "Scheduled", variant: "info" },
+  SENT: { label: "Sent", variant: "positive" },
+  SEND_FAILED: { label: "Send failed", variant: "danger" },
+  DELETED: { label: "Deleted", variant: "neutral" },
+  UNKNOWN: { label: "Unknown", variant: "neutral" },
+};
+
+const TRIGGER_STATUSES = {
+  PENDING: { label: "Pending", variant: "neutral" },
+  TEMPLATE_CREATED: { label: "Template created", variant: "info" },
+  SENT: { label: "Sent", variant: "positive" },
+  SUPPRESSED: { label: "Suppressed", variant: "warning" },
+};
+
+const selectClass =
+  "rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400";
+
+function formatInr(value) {
+  if (value === null || value === undefined) return "—";
+  return `₹${Number(value).toFixed(2)}`;
 }
-function fmtShort(d) {
-  if (!d) return "";
-  try {
-    return new Date(d).toLocaleString("en-IN", {
-      day: "numeric",
-      month: "short",
-    });
-  } catch {
-    return d;
-  }
+
+// Same {{n}} substitution the backend uses for the approval page and email.
+function fillBody(bodyDraft, variables) {
+  let text = bodyDraft || "";
+  (variables || []).forEach((v, i) => {
+    text = text.replace(`{{${i + 1}}}`, String(v));
+  });
+  return text;
 }
 
-// ─── status config ────────────────────────────────────────────────────────────
-const STATUS = {
-  DRAFT: {
-    label: "Draft",
-    bar: "bg-slate-300",
-    pill: "bg-slate-100 text-slate-600",
-    pulse: false,
-  },
-  SUBMITTED: {
-    label: "Awaiting Meta",
-    bar: "bg-amber-400",
-    pill: "bg-amber-50 text-amber-700",
-    pulse: true,
-  },
-  READY: {
-    label: "Approved",
-    bar: "bg-green-600",
-    pill: "bg-green-50 text-green-700",
-    pulse: false,
-  },
-  SCHEDULED: {
-    label: "Sending",
-    bar: "bg-blue-500",
-    pill: "bg-blue-50 text-blue-700",
-    pulse: true,
-  },
-  COMPLETED: {
-    label: "Completed",
-    bar: "bg-green-600",
-    pill: "bg-green-50 text-green-700",
-    pulse: false,
-  },
-  REJECTED: {
-    label: "Rejected",
-    bar: "bg-red-500",
-    pill: "bg-red-50 text-red-600",
-    pulse: false,
-  },
-  CANCELLED: {
-    label: "Cancelled",
-    bar: "bg-slate-300",
-    pill: "bg-slate-100 text-slate-500",
-    pulse: false,
-  },
-  FAILED: {
-    label: "Failed",
-    bar: "bg-red-500",
-    pill: "bg-red-50 text-red-600",
-    pulse: false,
-  },
-};
+function scenarioLabel(s) {
+  return SCENARIOS[s]?.label || s;
+}
 
-const RSTATUS = {
-  PENDING: { label: "Pending", cls: "bg-slate-100 text-slate-500" },
-  SCHEDULED: { label: "Queued", cls: "bg-blue-50 text-blue-600" },
-  SENT: { label: "Delivered", cls: "bg-green-50 text-green-700" },
-  FAILED: { label: "Failed", cls: "bg-red-50 text-red-600" },
-  SKIPPED: { label: "Skipped", cls: "bg-slate-100 text-slate-400" },
-};
+function StageBadge({ stage }) {
+  const meta = STAGES[stage] || STAGES.UNKNOWN;
+  return <Badge variant={meta.variant}>{meta.label}</Badge>;
+}
 
-const POLLING = new Set(["SUBMITTED", "SCHEDULED"]);
-const POLL_MS = 6000;
-const DONE = new Set(["COMPLETED", "CANCELLED", "FAILED", "REJECTED"]);
+// Small fetch helper: results are stored with the key that produced them,
+// so "loading" is derived instead of set synchronously inside the effect.
+function useKeyedFetch(key, fetcher) {
+  const [result, setResult] = useState(null);
 
-// ─── icons ────────────────────────────────────────────────────────────────────
-const Icon = {
-  Back: (p) => (
-    <svg
-      {...p}
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M12.5 5L7.5 10l5 5"
-      />
-    </svg>
-  ),
-  Clock: (p) => (
-    <svg
-      {...p}
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-    >
-      <circle cx="10" cy="10" r="7.5" />
-      <path strokeLinecap="round" d="M10 6v4l2.5 2.5" />
-    </svg>
-  ),
-  Send: (p) => (
-    <svg {...p} viewBox="0 0 20 20" fill="currentColor">
-      <path d="M3.105 3.105a.75.75 0 01.814-.162l13.5 5.625a.75.75 0 010 1.364l-13.5 5.625a.75.75 0 01-1.04-.898L4.96 10 2.879 4.341a.75.75 0 01.226-.736z" />
-    </svg>
-  ),
-  Check: (p) => (
-    <svg
-      {...p}
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M4.5 10.5l4 4 7-8"
-      />
-    </svg>
-  ),
-  X: (p) => (
-    <svg
-      {...p}
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M5 5l10 10M15 5L5 15"
-      />
-    </svg>
-  ),
-  Warn: (p) => (
-    <svg {...p} viewBox="0 0 20 20" fill="currentColor">
-      <path
-        fillRule="evenodd"
-        d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
-      />
-    </svg>
-  ),
-  People: (p) => (
-    <svg {...p} viewBox="0 0 20 20" fill="currentColor">
-      <path d="M7 8a3 3 0 100-6 3 3 0 000 6zM14.5 9a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM1.615 16.428a1.224 1.224 0 01-.015-.224A6.5 6.5 0 0113.5 9.5a6.5 6.5 0 016.385 5.204c.006.073.009.148.009.224H1.615zM14.5 16a6.5 6.5 0 00-5.5-6.416A4.001 4.001 0 0118.5 14h-4z" />
-    </svg>
-  ),
-  Edit: (p) => (
-    <svg
-      {...p}
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M13.586 3.586a2 2 0 012.828 2.828L7.5 15.328l-3.5.672.672-3.5 8.914-8.914z"
-      />
-    </svg>
-  ),
-  Plus: (p) => (
-    <svg
-      {...p}
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12M4 10h12" />
-    </svg>
-  ),
-  Trash: (p) => (
-    <svg
-      {...p}
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M6 5h8M8 5V3h4v2M7 5v10a1 1 0 001 1h4a1 1 0 001-1V5H7z"
-      />
-    </svg>
-  ),
-  Image: (p) => (
-    <svg {...p} viewBox="0 0 20 20" fill="currentColor">
-      <path
-        fillRule="evenodd"
-        d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z"
-      />
-    </svg>
-  ),
-};
+  useEffect(() => {
+    let cancelled = false;
+    fetcher()
+      .then((res) => {
+        if (!cancelled) setResult({ key, data: res.data, error: false });
+      })
+      .catch(() => {
+        if (!cancelled) setResult({ key, data: null, error: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
-// ─── shared components ────────────────────────────────────────────────────────
-
-function Pill({ status }) {
-  const s = STATUS[status] ?? {
-    label: status,
-    pill: "bg-slate-100 text-slate-600",
-    pulse: false,
+  const current = result?.key === key ? result : null;
+  return {
+    data: current?.data ?? null,
+    error: current?.error ?? false,
+    loading: !current,
   };
-  return (
-    <span
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${s.pill}`}
-    >
-      <span
-        className={`h-1.5 w-1.5 rounded-full ${s.bar} ${s.pulse ? "animate-pulse" : ""}`}
-      />
-      {s.label}
-    </span>
-  );
 }
 
-function RBadge({ status }) {
-  const s = RSTATUS[status] ?? {
-    label: status,
-    cls: "bg-slate-100 text-slate-500",
-  };
+function Pager({ page, totalPages, onPage }) {
+  if (!totalPages || totalPages <= 1) return null;
   return (
-    <span
-      className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${s.cls}`}
-    >
-      {s.label}
-    </span>
-  );
-}
-
-function Bar({ sent, failed, total }) {
-  const sp = total > 0 ? Math.round((sent / total) * 100) : 0;
-  const fp = total > 0 ? Math.round((failed / total) * 100) : 0;
-  return (
-    <div>
-      <div className="mb-1 flex justify-between text-xs text-slate-500">
-        <span>
-          {sent} delivered · {failed} failed ·{" "}
-          {Math.max(0, total - sent - failed)} pending
-        </span>
-        <span className="font-semibold text-slate-700">{sp + fp}%</span>
-      </div>
-      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-        <div
-          className="h-full bg-green-600 transition-all duration-700"
-          style={{ width: `${sp}%` }}
-        />
-        <div
-          className="h-full bg-red-400 transition-all duration-700"
-          style={{ width: `${fp}%` }}
-        />
-      </div>
+    <div className="mt-4 flex items-center justify-between text-sm text-gray-500">
+      <button
+        onClick={() => onPage(Math.max(1, page - 1))}
+        disabled={page <= 1}
+        className="rounded-lg border border-gray-200 px-3 py-1.5 disabled:opacity-40"
+      >
+        Previous
+      </button>
+      <span>
+        Page {page} of {totalPages}
+      </span>
+      <button
+        onClick={() => onPage(Math.min(totalPages, page + 1))}
+        disabled={page >= totalPages}
+        className="rounded-lg border border-gray-200 px-3 py-1.5 disabled:opacity-40"
+      >
+        Next
+      </button>
     </div>
   );
 }
@@ -324,1046 +176,727 @@ function Spin({ cls = "h-4 w-4" }) {
   );
 }
 
-function Stat({ label, value, accent }) {
+function ApprovalButtons({ busy, onApprove, onReject, size = "md" }) {
+  const pad = size === "sm" ? "px-3 py-1.5 text-xs" : "px-4 py-2 text-sm";
   return (
-    <div
-      className={`rounded-xl border px-4 py-3 text-center ${accent ? "border-green-200 bg-green-50" : "border-slate-200 bg-white"}`}
-    >
-      <div
-        className={`text-2xl font-bold ${accent ? "text-green-700" : "text-slate-900"}`}
+    <div className="flex items-center gap-2">
+      <button
+        onClick={onApprove}
+        disabled={busy}
+        className={`rounded-lg bg-fairway-700 font-medium text-white hover:bg-fairway-800 disabled:opacity-50 ${pad}`}
       >
-        {value}
-      </div>
-      <div className="mt-0.5 text-xs font-medium text-slate-400">{label}</div>
+        {busy ? "Working…" : "Approve & submit to Meta"}
+      </button>
+      <button
+        onClick={onReject}
+        disabled={busy}
+        className={`rounded-lg border border-gray-200 bg-white font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 ${pad}`}
+      >
+        Reject
+      </button>
     </div>
   );
 }
 
-function Banner({ status, sentCount, completedAt, metaRejectionReason }) {
-  if (status === "SUBMITTED")
-    return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-        <Icon.Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-        <div>
-          <p className="text-sm font-semibold text-amber-800">
-            Waiting for Meta to approve the template
-          </p>
-          <p className="mt-0.5 text-xs text-amber-600">
-            Usually takes 1–10 minutes. This page updates automatically.
-          </p>
-        </div>
-      </div>
-    );
-  if (status === "SCHEDULED")
-    return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
-        <Icon.Send className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
-        <div>
-          <p className="text-sm font-semibold text-blue-800">
-            Messages are on their way
-          </p>
-          <p className="mt-0.5 text-xs text-blue-600">
-            Delivery statuses refresh every 6 seconds.
-          </p>
-        </div>
-      </div>
-    );
-  if (status === "COMPLETED")
-    return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3">
-        <Icon.Check className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
-        <div>
-          <p className="text-sm font-semibold text-green-800">
-            Campaign complete
-          </p>
-          <p className="mt-0.5 text-xs text-green-700">
-            {sentCount ?? 0} message{(sentCount ?? 0) !== 1 ? "s" : ""}{" "}
-            delivered.
-            {completedAt && ` Finished ${fmt(completedAt)}.`}
-          </p>
-        </div>
-      </div>
-    );
-  if (status === "REJECTED")
-    return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
-        <Icon.X className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-        <div>
-          <p className="text-sm font-semibold text-red-800">
-            Template rejected by Meta
-          </p>
-          {metaRejectionReason && (
-            <p className="mt-0.5 text-xs text-red-600">{metaRejectionReason}</p>
-          )}
-        </div>
-      </div>
-    );
-  if (status === "CANCELLED")
-    return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-        <Icon.X className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
-        <p className="text-sm text-slate-600">This campaign was cancelled.</p>
-      </div>
-    );
-  return null;
-}
-
-// ─── WhatsApp mock preview ────────────────────────────────────────────────────
-//
-// Renders a read-only phone-frame with the live template content.
-// Shows header (text / image placeholder), body, footer, and button chips.
-
-function WAMockup({ header, body, footer, buttons, createdAt }) {
-  const hasButtons = buttons?.filter((b) => b.text?.trim()).length > 0;
-
+function LaneCards({ byScenario, onViewStatic }) {
   return (
-    <div className="flex flex-col items-center">
-      {/* Phone frame */}
-      <div
-        className="relative w-full max-w-[260px] overflow-hidden rounded-3xl border-[6px] border-slate-800 bg-slate-800 shadow-2xl"
-        style={{ aspectRatio: "9/18" }}
-      >
-        {/* Status bar */}
-        <div className="flex h-7 items-center justify-between bg-[#075E54] px-3">
-          <div className="flex items-center gap-1.5">
-            <div className="h-3 w-3 rounded-full bg-white/20" />
-            <span className="text-[9px] font-semibold text-white/70">
-              Golf Care
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="h-1 w-1 rounded-full bg-green-400" />
-            <span className="text-[8px] text-white/60">online</span>
-          </div>
-        </div>
-
-        {/* Chat area */}
-        <div className="flex h-full flex-col bg-[#eae6df] px-2 pt-2 pb-12">
-          {/* Message bubble */}
-          <div className="self-start w-[92%]">
-            <div className="overflow-hidden rounded-2xl rounded-tl-none bg-white shadow-sm">
-              {/* Header */}
-              {header?.type === "TEXT" && header.text?.trim() && (
-                <div className="border-b border-slate-100 px-3 pt-2.5 pb-1.5">
-                  <p className="text-[11px] font-bold leading-tight text-slate-900">
-                    {header.text}
-                  </p>
-                </div>
-              )}
-              {header?.type === "IMAGE" && (
-                <div className="flex h-24 items-center justify-center bg-slate-100">
-                  {header.imageUrl ? (
-                    <img
-                      src={header.imageUrl}
-                      alt="Header"
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center gap-1 text-slate-400">
-                      <Icon.Image className="h-6 w-6" />
-                      <span className="text-[9px]">Image header</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Body */}
-              <div className="px-3 py-2.5">
-                <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-slate-800">
-                  {body || (
-                    <span className="italic text-slate-400">Message body…</span>
-                  )}
-                </p>
-                {/* Footer */}
-                {footer?.text?.trim() && (
-                  <p className="mt-1.5 text-[9.5px] text-slate-400">
-                    {footer.text}
-                  </p>
-                )}
-                <p className="mt-1 text-right text-[8px] text-slate-400">
-                  {fmtShort(createdAt || new Date())}
-                </p>
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      {Object.entries(SCENARIOS).map(([key, meta]) => {
+        const counts = byScenario?.[key] || {};
+        const sent = counts.SENT || 0;
+        const suppressed = counts.SUPPRESSED || 0;
+        const inProgress =
+          (counts.PENDING || 0) + (counts.TEMPLATE_CREATED || 0);
+        const IconComp = meta.icon;
+        return (
+          <div
+            key={key}
+            className="rounded-xl border border-gray-200 bg-white p-5"
+          >
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-fairway-600">
+                  <IconComp />
+                </span>
+                <h3 className="text-sm font-medium text-gray-900">
+                  {meta.label}
+                </h3>
               </div>
-
-              {/* Buttons */}
-              {hasButtons && (
-                <div className="divide-y divide-slate-100 border-t border-slate-100">
-                  {buttons
-                    .filter((b) => b.text?.trim())
-                    .map((b, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center justify-center px-3 py-2"
-                      >
-                        <span className="text-[10px] font-semibold text-[#128C7E]">
-                          {b.text}
-                        </span>
-                      </div>
-                    ))}
-                </div>
-              )}
+              <Badge variant={meta.lane === "Dynamic" ? "info" : "neutral"}>
+                {meta.lane}
+              </Badge>
+            </div>
+            <p className="mt-1 text-xs text-gray-400">{meta.laneHint}</p>
+            {meta.lane === "Static" && (
+              <button
+                onClick={() => onViewStatic(key)}
+                className="mt-2 text-xs font-medium text-fairway-700 hover:text-fairway-900"
+              >
+                View message →
+              </button>
+            )}
+            <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+              <div>
+                <p className="text-lg font-semibold text-gray-900">{sent}</p>
+                <p className="text-xs text-gray-400">Sent</p>
+              </div>
+              <div>
+                <p className="text-lg font-semibold text-gray-900">
+                  {inProgress}
+                </p>
+                <p className="text-xs text-gray-400">In progress</p>
+              </div>
+              <div>
+                <p className="text-lg font-semibold text-gray-900">
+                  {suppressed}
+                </p>
+                <p className="text-xs text-gray-400">Suppressed</p>
+              </div>
             </div>
           </div>
-        </div>
-
-        {/* Home bar */}
-        <div className="absolute bottom-2 left-1/2 h-1 w-20 -translate-x-1/2 rounded-full bg-white/30" />
-      </div>
-      <p className="mt-2 text-xs text-slate-400">Live preview</p>
+        );
+      })}
     </div>
   );
 }
 
-// ─── TemplateEditor ────────────────────────────────────────────────────────────
-//
-// Only shown for DRAFT campaigns.
-// Tabs: Header | Body | Footer | Buttons
-// Right panel: live WAMockup
-// Save button: PATCH /api/campaigns/:id/template
-
-const HEADER_TYPES = ["NONE", "TEXT", "IMAGE"];
-
-function TemplateEditor({ campaign, onSaved }) {
-  const [tab, setTab] = useState("body");
-
-  // local state — mirrors what goes to the server
-  const [header, setHeader] = useState({
-    type: campaign.headerType || "NONE",
-    text: campaign.headerText || "",
-    imageUrl: campaign.headerImageUrl || "",
-  });
-  const [body, setBody] = useState(campaign.bodyText || "");
-  const [footer, setFooter] = useState({ text: campaign.footerText || "" });
-  const [buttons, setButtons] = useState(
-    campaign.buttons?.length
-      ? campaign.buttons
-      : [{ type: "QUICK_REPLY", text: "" }],
-  );
-
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState(null);
-  const [saved, setSaved] = useState(false);
-
-  // body char count
-  const bodyCount = body.length;
-  const bodyOver = bodyCount > 1024;
-
-  // button helpers
-  function addButton() {
-    if (buttons.length >= 3) return;
-    setButtons((prev) => [...prev, { type: "QUICK_REPLY", text: "" }]);
-  }
-  function removeButton(i) {
-    setButtons((prev) => prev.filter((_, idx) => idx !== i));
-  }
-  function updateButton(i, field, value) {
-    setButtons((prev) =>
-      prev.map((b, idx) => (idx === i ? { ...b, [field]: value } : b)),
-    );
-  }
-
-  async function handleSave() {
-    setSaving(true);
-    setSaveError(null);
-    setSaved(false);
-    try {
-      const payload = {
-        bodyText: body,
-        headerType: header.type,
-        headerText: header.type === "TEXT" ? header.text : null,
-        headerImageUrl: header.type === "IMAGE" ? header.imageUrl : null,
-        footerText: footer.text || null,
-        buttons: buttons
-          .filter((b) => b.text?.trim())
-          .map((b) => ({ type: b.type, text: b.text.trim() })),
-      };
-      const res = await updateCampaignTemplate(campaign.id, payload);
-      setSaved(true);
-      onSaved?.(res.data.data ?? { ...campaign, ...payload });
-      setTimeout(() => setSaved(false), 3000);
-    } catch (err) {
-      setSaveError(err.response?.data?.error ?? "Failed to save. Try again.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const TABS = [
-    { id: "body", label: "Body" },
-    { id: "header", label: "Header" },
-    { id: "footer", label: "Footer" },
-    { id: "buttons", label: "Buttons" },
-  ];
-
+function ApprovalCard({ template, busy, onOpen, onApprove, onReject }) {
+  const body = fillBody(template.bodyDraft, template.variables);
   return (
-    <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
-      {/* Panel header */}
-      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
-        <div className="flex items-center gap-2">
-          <Icon.Edit className="h-4 w-4 text-slate-400" />
-          <span className="text-xs font-semibold text-slate-600">
-            Edit Template
+    <div className="flex flex-col gap-4 rounded-xl border border-gray-200 bg-white p-5 sm:flex-row">
+      {template.imageUrl ? (
+        <img
+          src={template.imageUrl}
+          alt=""
+          className="h-28 w-full shrink-0 rounded-lg object-cover sm:w-28"
+        />
+      ) : (
+        <div className="flex h-28 w-full shrink-0 items-center justify-center rounded-lg bg-gray-50 text-xs text-gray-400 sm:w-28">
+          No image
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="info">{scenarioLabel(template.scenario)}</Badge>
+          <span className="text-xs text-gray-400">
+            {formatDateTime(template.createdAt)}
           </span>
         </div>
-        <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-semibold text-slate-500">
-          Draft only
-        </span>
-      </div>
-
-      <div className="flex flex-col gap-0 lg:flex-row">
-        {/* Left: editor */}
-        <div className="flex-1 border-b border-slate-100 lg:border-b-0 lg:border-r">
-          {/* Tabs */}
-          <div className="flex border-b border-slate-100">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={`px-4 py-2.5 text-xs font-semibold transition-colors ${
-                  tab === t.id
-                    ? "border-b-2 border-green-600 text-green-700"
-                    : "text-slate-400 hover:text-slate-600"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="p-4">
-            {/* BODY TAB */}
-            {tab === "body" && (
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold text-slate-500">
-                  Message Body
-                </label>
-                <textarea
-                  value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  rows={5}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm leading-relaxed text-slate-800 focus:outline-none focus:ring-1 focus:ring-green-500 ${
-                    bodyOver
-                      ? "border-red-300 bg-red-50"
-                      : "border-slate-200 bg-slate-50"
-                  }`}
-                  placeholder="Hi {{1}}, ..."
-                />
-                <div className="mt-1.5 flex items-center justify-between">
-                  <p className="text-xs text-slate-400">
-                    Must start with{" "}
-                    <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px]">
-                      Hi {"{{1}}"},"
-                    </code>
-                  </p>
-                  <span
-                    className={`text-xs font-medium ${bodyOver ? "text-red-500" : bodyCount > 900 ? "text-amber-500" : "text-slate-400"}`}
-                  >
-                    {bodyCount}/1024
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* HEADER TAB */}
-            {tab === "header" && (
-              <div className="space-y-4">
-                <div>
-                  <label className="mb-1.5 block text-xs font-semibold text-slate-500">
-                    Header Type
-                  </label>
-                  <div className="flex gap-2">
-                    {HEADER_TYPES.map((t) => (
-                      <button
-                        key={t}
-                        onClick={() => setHeader((h) => ({ ...h, type: t }))}
-                        className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
-                          header.type === t
-                            ? "bg-green-700 text-white"
-                            : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                        }`}
-                      >
-                        {t === "NONE"
-                          ? "None"
-                          : t === "TEXT"
-                            ? "Text"
-                            : "Image"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {header.type === "TEXT" && (
-                  <div>
-                    <label className="mb-1.5 block text-xs font-semibold text-slate-500">
-                      Header Text
-                    </label>
-                    <input
-                      type="text"
-                      value={header.text}
-                      onChange={(e) =>
-                        setHeader((h) => ({ ...h, text: e.target.value }))
-                      }
-                      maxLength={60}
-                      placeholder="e.g. Golf Care Members"
-                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
-                    />
-                    <p className="mt-1 text-xs text-slate-400">
-                      Max 60 characters. No variables allowed.
-                    </p>
-                  </div>
-                )}
-
-                {header.type === "IMAGE" && (
-                  <div>
-                    <label className="mb-1.5 block text-xs font-semibold text-slate-500">
-                      Image URL
-                    </label>
-                    <input
-                      type="url"
-                      value={header.imageUrl}
-                      onChange={(e) =>
-                        setHeader((h) => ({ ...h, imageUrl: e.target.value }))
-                      }
-                      placeholder="https://..."
-                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
-                    />
-                    <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 space-y-1">
-                      <p className="font-semibold text-slate-600">
-                        Image requirements (Meta)
-                      </p>
-                      <p>· Ratio: 800×418 px (16:9)</p>
-                      <p>· Max size: 5 MB</p>
-                      <p>· Formats: JPG, PNG</p>
-                      <p>· Text must cover less than 20% of image</p>
-                    </div>
-                  </div>
-                )}
-
-                {header.type === "NONE" && (
-                  <p className="text-sm text-slate-400 italic">
-                    No header will be shown. The message starts directly with
-                    the body.
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* FOOTER TAB */}
-            {tab === "footer" && (
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold text-slate-500">
-                  Footer Text
-                </label>
-                <input
-                  type="text"
-                  value={footer.text}
-                  onChange={(e) => setFooter({ text: e.target.value })}
-                  maxLength={60}
-                  placeholder="e.g. Reply STOP to unsubscribe"
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
-                />
-                <p className="mt-1.5 text-xs text-slate-400">
-                  Footer appears in smaller, muted text below the body. Optional
-                  but recommended for opt-out instructions.
-                </p>
-              </div>
-            )}
-
-            {/* BUTTONS TAB */}
-            {tab === "buttons" && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-slate-500">
-                    Reply Buttons
-                  </label>
-                  <button
-                    onClick={addButton}
-                    disabled={buttons.length >= 3}
-                    className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    <Icon.Plus className="h-3 w-3" />
-                    Add button
-                  </button>
-                </div>
-
-                {buttons.length === 0 && (
-                  <p className="text-sm text-slate-400 italic">
-                    No buttons. Add up to 3 quick-reply buttons.
-                  </p>
-                )}
-
-                {buttons.map((btn, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <div className="flex-1">
-                      <input
-                        type="text"
-                        value={btn.text}
-                        onChange={(e) =>
-                          updateButton(i, "text", e.target.value)
-                        }
-                        maxLength={25}
-                        placeholder={`Button ${i + 1} label`}
-                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
-                      />
-                    </div>
-                    <select
-                      value={btn.type}
-                      onChange={(e) => updateButton(i, "type", e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-xs text-slate-600 focus:border-green-500 focus:outline-none"
-                    >
-                      <option value="QUICK_REPLY">Quick Reply</option>
-                      <option value="PHONE_NUMBER">Call</option>
-                      <option value="URL">URL</option>
-                    </select>
-                    <button
-                      onClick={() => removeButton(i)}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500"
-                    >
-                      <Icon.Trash className="h-4 w-4" />
-                    </button>
-                  </div>
-                ))}
-
-                <p className="text-xs text-slate-400">
-                  Quick Reply buttons let customers respond with one tap. Max 3
-                  buttons, 25 chars each.
-                </p>
-              </div>
-            )}
-
-            {/* Save error */}
-            {saveError && (
-              <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                <Icon.Warn className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500" />
-                {saveError}
-              </div>
-            )}
-
-            {/* Save button */}
-            <div className="mt-4 flex items-center gap-3">
-              <button
-                onClick={handleSave}
-                disabled={saving || bodyOver}
-                className="flex items-center gap-2 rounded-lg bg-green-700 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {saving ? (
-                  <>
-                    <Spin cls="h-3.5 w-3.5" /> Saving…
-                  </>
-                ) : (
-                  "Save changes"
-                )}
-              </button>
-              {saved && (
-                <span className="flex items-center gap-1 text-xs font-semibold text-green-600">
-                  <Icon.Check className="h-3.5 w-3.5" /> Saved
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Right: live preview */}
-        <div className="flex items-start justify-center p-4 lg:w-72 xl:w-80">
-          <WAMockup
-            header={header}
-            body={body}
-            footer={footer}
-            buttons={buttons}
-            createdAt={campaign.createdAt}
+        <button
+          onClick={onOpen}
+          className="mt-2 block w-full text-left text-sm text-gray-900 hover:text-fairway-700"
+        >
+          {body}
+        </button>
+        <p className="mt-2 text-xs text-gray-500">
+          For {template.customer?.name || "Unknown customer"} · drafted{" "}
+          {formatInr(template.draftCostInr)}
+        </p>
+        <div className="mt-3">
+          <ApprovalButtons
+            busy={busy}
+            size="sm"
+            onApprove={onApprove}
+            onReject={onReject}
           />
         </div>
       </div>
     </div>
   );
 }
+
+function ApprovalQueue({ items, loading, error, busyId, onOpen, onDecide }) {
+  if (loading) {
+    return (
+      <div className="space-y-3">
+        {Array.from({ length: 2 }).map((_, i) => (
+          <div key={i} className="h-32 animate-pulse rounded-xl bg-gray-100" />
+        ))}
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-6 text-center text-sm text-gray-400">
+        Couldn't load the approval queue.
+      </div>
+    );
+  }
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        title="Nothing waiting for approval"
+        description="New AI-drafted campaign messages will appear here for you to approve before they go to Meta."
+      />
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {items.map((t) => (
+        <ApprovalCard
+          key={t.id}
+          template={t}
+          busy={busyId === t.id}
+          onOpen={() => onOpen(t)}
+          onApprove={() => onDecide(t.id, "approve")}
+          onReject={() => onDecide(t.id, "reject")}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TemplatesTable({ rows, loading, error, onOpen }) {
+  if (loading) {
+    return <div className="h-48 animate-pulse rounded-xl bg-gray-100" />;
+  }
+  if (error) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-6 text-center text-sm text-gray-400">
+        Couldn't load templates.
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="No campaign templates yet"
+        description="Once a cross-sell draft is created, it shows up here with its progress through approval, Meta review and sending."
+      />
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+      <table className="w-full text-left text-sm">
+        <thead>
+          <tr className="border-b border-gray-100 text-xs text-gray-400">
+            <th className="px-4 py-2.5 font-medium">Customer</th>
+            <th className="px-4 py-2.5 font-medium">Scenario</th>
+            <th className="px-4 py-2.5 font-medium">Message</th>
+            <th className="px-4 py-2.5 font-medium">Stage</th>
+            <th className="px-4 py-2.5 text-right font-medium">Created</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {rows.map((t) => (
+            <tr
+              key={t.id}
+              onClick={() => onOpen(t)}
+              className="cursor-pointer hover:bg-fairway-50/30"
+            >
+              <td className="px-4 py-3 text-gray-900">
+                {t.customer?.name || "—"}
+              </td>
+              <td className="px-4 py-3 text-gray-500">
+                {scenarioLabel(t.scenario)}
+              </td>
+              <td className="max-w-xs truncate px-4 py-3 text-gray-500">
+                {fillBody(t.bodyDraft, t.variables)}
+              </td>
+              <td className="px-4 py-3">
+                <StageBadge stage={t.stage} />
+              </td>
+              <td className="px-4 py-3 text-right text-xs text-gray-400">
+                {formatDate(t.createdAt)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TriggersTable({ rows, loading, error }) {
+  if (loading) {
+    return <div className="h-48 animate-pulse rounded-xl bg-gray-100" />;
+  }
+  if (error) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-6 text-center text-sm text-gray-400">
+        Couldn't load the trigger log.
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-6 text-center text-sm text-gray-400">
+        No campaign triggers match these filters.
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+      <table className="w-full text-left text-sm">
+        <thead>
+          <tr className="border-b border-gray-100 text-xs text-gray-400">
+            <th className="px-4 py-2.5 font-medium">Customer</th>
+            <th className="px-4 py-2.5 font-medium">Scenario</th>
+            <th className="px-4 py-2.5 font-medium">Status</th>
+            <th className="px-4 py-2.5 font-medium">Note</th>
+            <th className="px-4 py-2.5 text-right font-medium">Detected</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {rows.map((t) => {
+            const status =
+              TRIGGER_STATUSES[t.status] || TRIGGER_STATUSES.PENDING;
+            return (
+              <tr key={t.id} className="hover:bg-fairway-50/30">
+                <td className="px-4 py-3 text-gray-900">
+                  {t.customer?.name || "—"}
+                </td>
+                <td className="px-4 py-3 text-gray-500">
+                  {scenarioLabel(t.scenario)}
+                </td>
+                <td className="px-4 py-3">
+                  <Badge variant={status.variant}>{status.label}</Badge>
+                </td>
+                <td className="max-w-xs truncate px-4 py-3 text-xs text-gray-400">
+                  {t.suppressedReason || "—"}
+                </td>
+                <td className="px-4 py-3 text-right text-xs text-gray-400">
+                  {formatDateTime(t.detectedAt)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Read-only view of a pre-approved template behind a static lane.
+function StaticTemplateDrawer({ scenario, onClose }) {
+  const meta = SCENARIOS[scenario];
+  const [state, setState] = useState({
+    loading: true,
+    data: null,
+    error: null,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchStaticCampaignTemplate(scenario)
+      .then((res) => {
+        if (!cancelled)
+          setState({ loading: false, data: res.data.data, error: null });
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setState({
+            loading: false,
+            data: null,
+            error: err.response?.data?.error || "Couldn't load the template.",
+          });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scenario]);
+
+  const t = state.data;
+  const examples = t?.exampleVariables || [];
+  const preview = t ? fillBody(t.bodyText, examples) : "";
+
+  return (
+    <Drawer
+      open
+      onClose={onClose}
+      title={`${meta?.label || scenario} message`}
+      subtitle="Pre-approved template, sent by the scheduler"
+    >
+      {state.loading && (
+        <div className="h-40 animate-pulse rounded-lg bg-gray-100" />
+      )}
+
+      {state.error && (
+        <p className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+          {state.error}
+        </p>
+      )}
+
+      {t && (
+        <div className="space-y-5">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={t.status === "APPROVED" ? "positive" : "warning"}>
+              {t.status === "APPROVED" ? "Approved by Meta" : t.status}
+            </Badge>
+            <Badge variant="neutral">{t.category}</Badge>
+          </div>
+
+          <div>
+            <p className="text-xs font-medium text-gray-400">Message</p>
+            <p className="mt-1 whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-900">
+              {preview}
+            </p>
+            {t.footerText && (
+              <p className="mt-2 text-xs text-gray-400">{t.footerText}</p>
+            )}
+          </div>
+
+          {examples.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-gray-400">
+                Variables filled from
+              </p>
+              <ul className="mt-1 space-y-1 text-sm text-gray-700">
+                {examples.map((v, i) => (
+                  <li key={i}>
+                    <span className="font-mono text-xs text-gray-400">{`{{${i + 1}}}`}</span>{" "}
+                    {v}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+            <dt className="text-gray-400">Template name</dt>
+            <dd className="break-all text-gray-900">{t.templateName}</dd>
+            <dt className="text-gray-400">Header</dt>
+            <dd className="text-gray-900">{t.headerFormat || "Text only"}</dd>
+          </dl>
+        </div>
+      )}
+    </Drawer>
+  );
+}
+
+function TemplateDrawer({ template, busy, onClose, onDecide }) {
+  if (!template) return null;
+  const body = fillBody(template.bodyDraft, template.variables);
+  const pending = template.internalApprovalStatus === "PENDING";
+
+  return (
+    <Drawer
+      open
+      onClose={onClose}
+      title={scenarioLabel(template.scenario)}
+      subtitle={template.customer?.name || "Unknown customer"}
+    >
+      <div className="space-y-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <StageBadge stage={template.stage} />
+          <Badge variant="neutral">{template.category}</Badge>
+        </div>
+
+        {template.imageUrl && (
+          <img
+            src={template.imageUrl}
+            alt=""
+            className="w-full rounded-lg object-cover"
+          />
+        )}
+
+        <div>
+          <p className="text-xs font-medium text-gray-400">Message</p>
+          <p className="mt-1 whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-900">
+            {body}
+          </p>
+        </div>
+
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+          <dt className="text-gray-400">Drafted</dt>
+          <dd className="text-gray-900">
+            {formatDateTime(template.createdAt)}
+          </dd>
+          <dt className="text-gray-400">Draft cost</dt>
+          <dd className="text-gray-900">{formatInr(template.draftCostInr)}</dd>
+          <dt className="text-gray-400">Approved by</dt>
+          <dd className="text-gray-900">
+            {template.internalApprovedBy || "—"}
+          </dd>
+          <dt className="text-gray-400">Meta status</dt>
+          <dd className="text-gray-900">
+            {template.metaStatus?.replace(/_/g, " ").toLowerCase()}
+          </dd>
+          <dt className="text-gray-400">Sent</dt>
+          <dd className="text-gray-900">{formatDateTime(template.sentAt)}</dd>
+          <dt className="text-gray-400">Template name</dt>
+          <dd className="break-all text-gray-900">{template.templateName}</dd>
+        </dl>
+
+        {template.metaRejectionReason && (
+          <p className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+            {template.metaRejectionReason}
+          </p>
+        )}
+
+        {pending && (
+          <ApprovalButtons
+            busy={busy}
+            onApprove={() => onDecide(template.id, "approve")}
+            onReject={() => onDecide(template.id, "reject")}
+          />
+        )}
+      </div>
+    </Drawer>
+  );
+}
+
+const TABS = [
+  { id: "queue", label: "Approval queue", icon: SparkIcon },
+  { id: "templates", label: "Templates", icon: ReceiptIcon },
+  { id: "triggers", label: "Trigger log", icon: MegaphoneIcon },
+];
 
 // ─── main ─────────────────────────────────────────────────────────────────────
 
 export default function Campaigns() {
-  useEffect(() => {
-    document.title = "Campaigns — GolfCare";
-  }, []);
+  useDocumentTitle("Campaigns");
 
-  const [searchParams, setSearchParams] = useSearchParams();
-
-  const [campaigns, setCampaigns] = useState([]);
-  const [loadingList, setLoadingList] = useState(true);
-  const [selectedId, setSelectedId] = useState(searchParams.get("id") ?? null);
-  const [detail, setDetail] = useState(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
-  const [actionLoading, setActionLoading] = useState(false);
+  const [tab, setTab] = useState("queue");
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [selected, setSelected] = useState(null);
+  const [staticScenario, setStaticScenario] = useState(null);
+  const [busyId, setBusyId] = useState(null);
   const [actionError, setActionError] = useState(null);
-  const [mobileView, setMobileView] = useState(
-    searchParams.get("id") ? "detail" : "list",
+
+  const [tplScenario, setTplScenario] = useState("");
+  const [tplPage, setTplPage] = useState(1);
+  const [trScenario, setTrScenario] = useState("");
+  const [trStatus, setTrStatus] = useState("");
+  const [trPage, setTrPage] = useState(1);
+
+  const summary = useKeyedFetch(`summary|${refreshTick}`, () =>
+    fetchCampaignSummary(),
   );
-  const pollRef = useRef(null);
 
-  const loadList = useCallback(async () => {
-    try {
-      const res = await listCampaigns({ limit: 50 });
-      const list = res.data.data ?? [];
-      setCampaigns(list);
-      return list;
-    } catch (e) {
-      console.error(e);
-      return [];
-    } finally {
-      setLoadingList(false);
-    }
-  }, []);
+  const queue = useKeyedFetch(`queue|${refreshTick}`, () =>
+    fetchCampaignTemplates({ approval: "PENDING", limit: 50 }),
+  );
 
-  const loadDetail = useCallback(async (id) => {
-    if (!id) return;
+  const templates = useKeyedFetch(
+    `templates|${tplScenario}|${tplPage}|${refreshTick}`,
+    () =>
+      fetchCampaignTemplates({
+        ...(tplScenario && { scenario: tplScenario }),
+        page: tplPage,
+        limit: LIMIT,
+      }),
+  );
+
+  const triggers = useKeyedFetch(
+    `triggers|${trScenario}|${trStatus}|${trPage}|${refreshTick}`,
+    () =>
+      fetchCampaignTriggers({
+        ...(trScenario && { scenario: trScenario }),
+        ...(trStatus && { status: trStatus }),
+        page: trPage,
+        limit: LIMIT,
+      }),
+  );
+
+  const decide = async (id, action) => {
+    setBusyId(id);
+    setActionError(null);
     try {
-      const res = await getCampaign(id);
-      const c = res.data.data;
-      setDetail(c);
-      setCampaigns((prev) =>
-        prev.map((x) =>
-          x.id === id
-            ? {
-                ...x,
-                status: c.status,
-                sentCount: c.sentCount,
-                failedCount: c.failedCount,
-              }
-            : x,
-        ),
+      if (action === "approve") await approveCampaignTemplate(id);
+      else await rejectCampaignTemplate(id);
+      setSelected(null);
+      setRefreshTick((t) => t + 1);
+    } catch (err) {
+      setActionError(
+        err.response?.data?.error ||
+          "Couldn't record that decision. Try again.",
       );
-    } catch (e) {
-      console.error(e);
     } finally {
-      setLoadingDetail(false);
+      setBusyId(null);
     }
-  }, []);
+  };
 
-  const detailId = detail?.id;
-  const detailStatus = detail?.status;
-  useEffect(() => {
-    clearInterval(pollRef.current);
-    if (detailId && POLLING.has(detailStatus)) {
-      pollRef.current = setInterval(() => loadDetail(detailId), POLL_MS);
-    }
-    return () => clearInterval(pollRef.current);
-  }, [detailStatus, detailId, loadDetail]);
+  const s = summary.data;
+  const pipeline = s?.pipeline;
 
-  function select(id) {
-    setSelectedId(id);
-    setSearchParams(id ? { id } : {});
-    setDetail(null);
-    setActionError(null);
-    setLoadingDetail(true);
-    setMobileView("detail");
-    loadDetail(id);
-  }
-
-  function goBack() {
-    setMobileView("list");
-    setSelectedId(null);
-    setDetail(null);
-    setSearchParams({});
-  }
-
-  useEffect(() => {
-    async function init() {
-      const list = await loadList();
-      const urlId = new URLSearchParams(window.location.search).get("id");
-      if (urlId) {
-        setLoadingDetail(true);
-        loadDetail(urlId);
-      } else if (list.length > 0) {
-        select(list[0].id);
-      }
-    }
-    init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadList, loadDetail]);
-
-  async function handleSubmit() {
-    setActionLoading(true);
-    setActionError(null);
-    try {
-      await submitCampaign(detail.id);
-      await loadDetail(detail.id);
-      await loadList();
-    } catch (e) {
-      setActionError(e.response?.data?.error ?? "Failed to submit.");
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
-  async function handleSend() {
-    setActionLoading(true);
-    setActionError(null);
-    try {
-      await sendCampaign(detail.id);
-      await loadDetail(detail.id);
-      await loadList();
-    } catch (e) {
-      setActionError(e.response?.data?.error ?? "Failed to send.");
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
-  async function handleCancel() {
-    if (!window.confirm("Cancel this campaign? This cannot be undone.")) return;
-    setActionLoading(true);
-    setActionError(null);
-    try {
-      await cancelCampaign(detail.id);
-      await loadDetail(detail.id);
-      await loadList();
-    } catch (e) {
-      setActionError(e.response?.data?.error ?? "Failed to cancel.");
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
-  // ─── list panel ─────────────────────────────────────────────────────────────
-  const ListPanel = (
-    <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-700">
-            <MegaphoneIcon />
-          </div>
-          <div>
-            <h1 className="text-base font-semibold text-slate-900 sm:text-lg">
-              Campaigns
-            </h1>
-            <p className="text-xs text-slate-400 sm:text-sm">
-              WhatsApp broadcast messages
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {loadingList ? (
-        <div className="flex flex-1 items-center justify-center gap-2 text-sm text-slate-400">
-          <Spin /> Loading…
-        </div>
-      ) : campaigns.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-green-50 text-green-700">
-            <MegaphoneIcon />
-          </div>
-          <div>
-            <p className="font-semibold text-slate-700">No campaigns yet</p>
-            <p className="mt-1 max-w-xs text-sm text-slate-400">
-              Open the Insights widget and ask it to send a message to your
-              members.
-            </p>
-          </div>
-        </div>
-      ) : (
-        <div className="flex-1 overflow-y-auto">
-          {campaigns.map((c) => {
-            const active = selectedId === c.id;
-            return (
-              <button
-                key={c.id}
-                onClick={() => select(c.id)}
-                className={`group w-full border-b border-slate-100 px-4 py-3.5 text-left transition-colors last:border-b-0 sm:px-5
-                  ${active ? "border-l-[3px] border-l-green-700 bg-green-50" : "hover:bg-slate-50"}`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <span
-                    className={`min-w-0 truncate text-sm font-semibold leading-snug ${active ? "text-green-800" : "text-slate-800"}`}
-                  >
-                    {c.name}
-                  </span>
-                  <Pill status={c.status} />
-                </div>
-                <div className="mt-1 flex items-center gap-1 text-xs text-slate-400">
-                  <Icon.People className="h-3 w-3" />
-                  <span>{c.audienceSize ?? 0}</span>
-                  <span className="mx-1 text-slate-200">|</span>
-                  <span>{fmtShort(c.createdAt)}</span>
-                </div>
-                {["SCHEDULED", "COMPLETED"].includes(c.status) && (
-                  <div className="mt-2.5">
-                    <Bar
-                      sent={c.sentCount || 0}
-                      failed={c.failedCount || 0}
-                      total={c.audienceSize || 0}
-                    />
-                  </div>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-
-  // ─── detail panel ─────────────────────────────────────────────────────────
-  const DetailPanel = (
-    <div className="flex h-full flex-col overflow-y-auto">
-      {/* mobile back bar */}
-      <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-3 lg:hidden">
-        <button
-          onClick={goBack}
-          className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm font-medium text-green-700 hover:bg-green-50 transition-colors"
-        >
-          <Icon.Back className="h-4 w-4" />
-          Campaigns
-        </button>
-      </div>
-
-      {loadingDetail && !detail ? (
-        <div className="flex flex-1 items-center justify-center gap-2 text-sm text-slate-400">
-          <Spin /> Loading…
-        </div>
-      ) : !detail ? (
-        <div className="hidden flex-1 items-center justify-center text-sm text-slate-300 lg:flex">
-          Select a campaign
-        </div>
-      ) : (
-        <div className="mx-auto w-full max-w-3xl p-4 sm:p-6">
-          {/* title */}
-          <div className="mb-5">
-            <div className="flex flex-wrap items-center gap-2.5">
-              <h2 className="text-lg font-bold text-slate-900 sm:text-xl">
-                {detail.name}
-              </h2>
-              <Pill status={detail.status} />
-              {loadingDetail && <Spin />}
-            </div>
-            <p className="mt-1 text-xs text-slate-400">
-              Created {fmt(detail.createdAt)}
-              {detail.confirmedAt && ` · Submitted ${fmt(detail.confirmedAt)}`}
-              {detail.metaApprovedAt &&
-                ` · Approved ${fmt(detail.metaApprovedAt)}`}
-            </p>
-          </div>
-
-          {/* status banner */}
-          <Banner
-            status={detail.status}
-            sentCount={detail.sentCount}
-            completedAt={detail.completedAt}
-            metaRejectionReason={detail.metaRejectionReason}
-          />
-
-          {/* stats */}
-          <div className="mb-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-            <Stat label="Audience" value={detail.audienceSize ?? 0} />
-            <Stat label="Delivered" value={detail.sentCount ?? 0} accent />
-            <Stat label="Failed" value={detail.failedCount ?? 0} />
-            <Stat label="Skipped" value={detail.skippedCount ?? 0} />
-          </div>
-
-          {/* progress bar */}
-          {["SCHEDULED", "COMPLETED"].includes(detail.status) && (
-            <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4">
-              <Bar
-                sent={detail.sentCount || 0}
-                failed={detail.failedCount || 0}
-                total={detail.audienceSize || 0}
-              />
-            </div>
-          )}
-
-          {/* ── Template editor (DRAFT only) ── */}
-          {detail.status === "DRAFT" && (
-            <TemplateEditor
-              campaign={detail}
-              onSaved={(updated) =>
-                setDetail((prev) => ({ ...prev, ...updated }))
-              }
-            />
-          )}
-
-          {/* ── Message preview (non-DRAFT) ── */}
-          {detail.status !== "DRAFT" && (
-            <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
-              <div className="border-b border-slate-100 px-4 py-2.5">
-                <span className="text-xs font-semibold text-slate-400">
-                  Message
-                </span>
-              </div>
-              <div className="flex flex-col items-start gap-4 bg-[#eae6df] px-4 pb-4 pt-3 sm:flex-row">
-                <div className="inline-block max-w-xs rounded-2xl rounded-tl-sm bg-white px-3.5 py-2.5 shadow-sm sm:max-w-sm">
-                  {detail.headerText && (
-                    <p className="mb-1 border-b border-slate-100 pb-1 text-xs font-bold text-slate-800">
-                      {detail.headerText}
-                    </p>
-                  )}
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
-                    {detail.bodyText}
-                  </p>
-                  {detail.footerText && (
-                    <p className="mt-1 text-xs text-slate-400">
-                      {detail.footerText}
-                    </p>
-                  )}
-                  <p className="mt-1 text-right text-[10px] text-slate-400">
-                    {fmtShort(detail.createdAt)}
-                  </p>
-                </div>
-              </div>
-              <div className="border-t border-slate-100 px-4 py-2.5">
-                <span className="text-xs text-slate-400">Template: </span>
-                <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
-                  {detail.templateName}
-                </code>
-                {detail.agentPrompt && (
-                  <p className="mt-1 text-xs italic text-slate-400">
-                    "{detail.agentPrompt}"
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* recipients */}
-          {detail.BroadcastRecipient?.length > 0 && (
-            <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
-              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
-                <span className="text-xs font-semibold text-slate-400">
-                  Recipients
-                </span>
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
-                  {detail.BroadcastRecipient.length}
-                </span>
-              </div>
-              <div className="hidden sm:block overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs font-semibold text-slate-400">
-                      <th className="px-4 py-2.5">Name</th>
-                      <th className="px-4 py-2.5">Phone</th>
-                      <th className="px-4 py-2.5">Status</th>
-                      <th className="px-4 py-2.5">Note</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {detail.BroadcastRecipient.map((r) => (
-                      <tr key={r.id} className="hover:bg-slate-50">
-                        <td className="px-4 py-2.5 font-medium text-slate-800">
-                          {r.firstName || "—"}
-                        </td>
-                        <td className="px-4 py-2.5 font-mono text-xs text-slate-500">
-                          {r.phone}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <RBadge status={r.status} />
-                        </td>
-                        <td className="px-4 py-2.5 text-xs text-slate-400">
-                          {r.skipReason ||
-                            r.errorMessage ||
-                            (r.sentAt ? fmt(r.sentAt) : "—")}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="divide-y divide-slate-100 sm:hidden">
-                {detail.BroadcastRecipient.map((r) => (
-                  <div
-                    key={r.id}
-                    className="flex items-center justify-between px-4 py-3"
-                  >
-                    <div>
-                      <p className="text-sm font-semibold text-slate-800">
-                        {r.firstName || "—"}
-                      </p>
-                      <p className="mt-0.5 font-mono text-xs text-slate-400">
-                        {r.phone}
-                      </p>
-                      {(r.skipReason || r.errorMessage || r.sentAt) && (
-                        <p className="mt-0.5 text-xs text-slate-400">
-                          {r.skipReason || r.errorMessage || fmt(r.sentAt)}
-                        </p>
-                      )}
-                    </div>
-                    <RBadge status={r.status} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* action error */}
-          {actionError && (
-            <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              <Icon.Warn className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
-              {actionError}
-            </div>
-          )}
-
-          {/* actions */}
-          {!DONE.has(detail.status) && (
-            <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
-              {detail.status === "DRAFT" && (
-                <button
-                  onClick={handleSubmit}
-                  disabled={actionLoading}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-700 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-                >
-                  {actionLoading ? (
-                    <>
-                      <Spin /> Submitting…
-                    </>
-                  ) : (
-                    "Submit to Meta for approval"
-                  )}
-                </button>
-              )}
-              {detail.status === "READY" && (
-                <button
-                  onClick={handleSend}
-                  disabled={actionLoading}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-700 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-                >
-                  {actionLoading ? (
-                    <>
-                      <Spin /> Scheduling…
-                    </>
-                  ) : (
-                    <>
-                      <Icon.Send className="h-4 w-4" /> Send to{" "}
-                      {detail.audienceSize ?? 0} members
-                    </>
-                  )}
-                </button>
-              )}
-              {!["COMPLETED", "FAILED"].includes(detail.status) && (
-                <button
-                  onClick={handleCancel}
-                  disabled={actionLoading}
-                  className="flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-
-  // ─── layout ──────────────────────────────────────────────────────────────────
   return (
-    <div className="flex h-full flex-col bg-slate-50">
-      <div className="hidden h-full lg:flex">
-        <div className="w-72 shrink-0 overflow-hidden border-r border-slate-200 bg-white xl:w-80">
-          {ListPanel}
-        </div>
-        <div className="flex flex-1 flex-col overflow-hidden">
-          {DetailPanel}
-        </div>
+    <div>
+      <PageHeader
+        title="Campaigns"
+        subtitle="Birthday, replenishment and cross-sell messages. AI-drafted messages wait for your approval before they reach Meta."
+      />
+
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
+        <StatCard
+          label="Awaiting approval"
+          value={pipeline?.awaitingApproval}
+          loading={!s && !summary.error}
+          hint={pipeline?.awaitingApproval ? "Needs your review" : "All clear"}
+        />
+        <StatCard
+          label="Awaiting Meta"
+          value={pipeline?.awaitingMeta}
+          loading={!s && !summary.error}
+        />
+        <StatCard
+          label="Scheduled"
+          value={pipeline?.scheduled}
+          loading={!s && !summary.error}
+        />
+        <StatCard
+          label="Sent"
+          value={pipeline?.sent}
+          loading={!s && !summary.error}
+        />
+        <StatCard
+          label="Failed"
+          value={pipeline ? pipeline.failed + pipeline.metaRejected : undefined}
+          loading={!s && !summary.error}
+          hint="Send or Meta rejections"
+        />
+        <StatCard
+          label="Draft cost"
+          value={s ? formatInr(s.draftCostInr) : undefined}
+          loading={!s && !summary.error}
+          hint="AI drafting, all time"
+        />
       </div>
-      <div className="flex h-full flex-col lg:hidden">
-        {mobileView === "list" ? ListPanel : DetailPanel}
+
+      <div className="mt-6">
+        <LaneCards
+          byScenario={s?.byScenario}
+          onViewStatic={setStaticScenario}
+        />
       </div>
+
+      <div className="mt-8 border-b border-gray-200">
+        <nav className="-mb-px flex gap-6">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`flex items-center gap-1.5 border-b-2 px-1 py-2.5 text-sm font-medium transition-colors ${
+                tab === t.id
+                  ? "border-fairway-700 text-fairway-900"
+                  : "border-transparent text-gray-500 hover:text-gray-800"
+              }`}
+            >
+              <t.icon className="h-4 w-4" />
+              {t.label}
+              {t.id === "queue" && queue.data?.total > 0 && (
+                <span className="ml-1 rounded-full bg-gold-300/40 px-1.5 text-xs text-gold-600">
+                  {queue.data.total}
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {actionError && (
+        <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
+          {actionError}
+        </p>
+      )}
+
+      <div className="mt-5">
+        {tab === "queue" && (
+          <ApprovalQueue
+            items={queue.data?.data || []}
+            loading={queue.loading}
+            error={queue.error}
+            busyId={busyId}
+            onOpen={setSelected}
+            onDecide={decide}
+          />
+        )}
+
+        {tab === "templates" && (
+          <>
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <select
+                value={tplScenario}
+                onChange={(e) => {
+                  setTplScenario(e.target.value);
+                  setTplPage(1);
+                }}
+                className={selectClass}
+              >
+                <option value="">All scenarios</option>
+                {Object.entries(SCENARIOS).map(([k, m]) => (
+                  <option key={k} value={k}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <TemplatesTable
+              rows={templates.data?.data || []}
+              loading={templates.loading}
+              error={templates.error}
+              onOpen={setSelected}
+            />
+            <Pager
+              page={tplPage}
+              totalPages={templates.data?.totalPages}
+              onPage={setTplPage}
+            />
+          </>
+        )}
+
+        {tab === "triggers" && (
+          <>
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <select
+                value={trScenario}
+                onChange={(e) => {
+                  setTrScenario(e.target.value);
+                  setTrPage(1);
+                }}
+                className={selectClass}
+              >
+                <option value="">All scenarios</option>
+                {Object.entries(SCENARIOS).map(([k, m]) => (
+                  <option key={k} value={k}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={trStatus}
+                onChange={(e) => {
+                  setTrStatus(e.target.value);
+                  setTrPage(1);
+                }}
+                className={selectClass}
+              >
+                <option value="">All statuses</option>
+                {Object.entries(TRIGGER_STATUSES).map(([k, m]) => (
+                  <option key={k} value={k}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <TriggersTable
+              rows={triggers.data?.data || []}
+              loading={triggers.loading}
+              error={triggers.error}
+            />
+            <Pager
+              page={trPage}
+              totalPages={triggers.data?.totalPages}
+              onPage={setTrPage}
+            />
+          </>
+        )}
+      </div>
+
+      {staticScenario && (
+        <StaticTemplateDrawer
+          key={staticScenario}
+          scenario={staticScenario}
+          onClose={() => setStaticScenario(null)}
+        />
+      )}
+
+      <TemplateDrawer
+        template={selected}
+        busy={busyId === selected?.id}
+        onClose={() => setSelected(null)}
+        onDecide={decide}
+      />
     </div>
   );
 }

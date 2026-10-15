@@ -1,3 +1,5 @@
+//src/App.jsx
+
 import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useKindeAuth } from "@kinde-oss/kinde-auth-react";
@@ -11,8 +13,10 @@ import Customers from "./pages/Customers";
 import Products from "./pages/Products";
 import Suppliers from "./pages/Suppliers";
 import AuditLog from "./pages/AuditLog";
-import Campaigns from "./pages/Campaigns";
+// import Campaigns from "./pages/Campaigns";
 import AgentUsage from "./pages/AgentUsage";
+import Campaigns from "./pages/Campaigns";
+import BroadcastCampaigns from "./pages/BroadcastCampaigns";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 import { registerTokenGetter } from "./api/apiClient";
@@ -92,6 +96,8 @@ export default function App() {
           <Route path="/customers" element={<Customers />} />
           <Route path="/suppliers" element={<Suppliers />} />
           <Route path="/campaigns" element={<Campaigns />} />
+          <Route path="/broadcast-campaigns" element={<BroadcastCampaigns />} />
+          {/* <Route path="/insights" element={<Placeholder name="Insights" />} /> */}
           <Route path="/audit-log" element={<AuditLog />} />
           <Route path="/agent-usage" element={<AgentUsage />} />
           <Route path="/settings" element={<Settings />} />

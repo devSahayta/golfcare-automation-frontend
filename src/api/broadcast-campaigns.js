@@ -1,4 +1,4 @@
-// src/api/campaigns.js
+// src/api/broadcast-campaigns.js
 import api from "./apiClient";
 
 export const listCampaigns = (params = {}) =>
