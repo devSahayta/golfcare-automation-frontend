@@ -1,0 +1,1369 @@
+// src/pages/Campaigns.jsx
+//
+// Fully responsive WhatsApp campaign manager.
+// Mobile: single-column list → tap → full-screen detail (back button).
+// Desktop (lg+): two-panel sidebar + detail.
+//
+// v2 additions:
+//   - Template editor for DRAFT campaigns (Header / Body / Footer / Buttons)
+//   - Live WhatsApp mockup preview
+//   - PATCH /api/campaigns/:id/template to persist template component changes
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import {
+  listCampaigns,
+  getCampaign,
+  submitCampaign,
+  sendCampaign,
+  cancelCampaign,
+  updateCampaignTemplate,
+} from "../api/campaigns";
+import { MegaphoneIcon } from "../components/icons";
+
+// ─── date helpers ─────────────────────────────────────────────────────────────
+function fmt(d) {
+  if (!d) return "";
+  try {
+    return new Date(d).toLocaleString("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return d;
+  }
+}
+function fmtShort(d) {
+  if (!d) return "";
+  try {
+    return new Date(d).toLocaleString("en-IN", {
+      day: "numeric",
+      month: "short",
+    });
+  } catch {
+    return d;
+  }
+}
+
+// ─── status config ────────────────────────────────────────────────────────────
+const STATUS = {
+  DRAFT: {
+    label: "Draft",
+    bar: "bg-slate-300",
+    pill: "bg-slate-100 text-slate-600",
+    pulse: false,
+  },
+  SUBMITTED: {
+    label: "Awaiting Meta",
+    bar: "bg-amber-400",
+    pill: "bg-amber-50 text-amber-700",
+    pulse: true,
+  },
+  READY: {
+    label: "Approved",
+    bar: "bg-green-600",
+    pill: "bg-green-50 text-green-700",
+    pulse: false,
+  },
+  SCHEDULED: {
+    label: "Sending",
+    bar: "bg-blue-500",
+    pill: "bg-blue-50 text-blue-700",
+    pulse: true,
+  },
+  COMPLETED: {
+    label: "Completed",
+    bar: "bg-green-600",
+    pill: "bg-green-50 text-green-700",
+    pulse: false,
+  },
+  REJECTED: {
+    label: "Rejected",
+    bar: "bg-red-500",
+    pill: "bg-red-50 text-red-600",
+    pulse: false,
+  },
+  CANCELLED: {
+    label: "Cancelled",
+    bar: "bg-slate-300",
+    pill: "bg-slate-100 text-slate-500",
+    pulse: false,
+  },
+  FAILED: {
+    label: "Failed",
+    bar: "bg-red-500",
+    pill: "bg-red-50 text-red-600",
+    pulse: false,
+  },
+};
+
+const RSTATUS = {
+  PENDING: { label: "Pending", cls: "bg-slate-100 text-slate-500" },
+  SCHEDULED: { label: "Queued", cls: "bg-blue-50 text-blue-600" },
+  SENT: { label: "Delivered", cls: "bg-green-50 text-green-700" },
+  FAILED: { label: "Failed", cls: "bg-red-50 text-red-600" },
+  SKIPPED: { label: "Skipped", cls: "bg-slate-100 text-slate-400" },
+};
+
+const POLLING = new Set(["SUBMITTED", "SCHEDULED"]);
+const POLL_MS = 6000;
+const DONE = new Set(["COMPLETED", "CANCELLED", "FAILED", "REJECTED"]);
+
+// ─── icons ────────────────────────────────────────────────────────────────────
+const Icon = {
+  Back: (p) => (
+    <svg
+      {...p}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M12.5 5L7.5 10l5 5"
+      />
+    </svg>
+  ),
+  Clock: (p) => (
+    <svg
+      {...p}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+    >
+      <circle cx="10" cy="10" r="7.5" />
+      <path strokeLinecap="round" d="M10 6v4l2.5 2.5" />
+    </svg>
+  ),
+  Send: (p) => (
+    <svg {...p} viewBox="0 0 20 20" fill="currentColor">
+      <path d="M3.105 3.105a.75.75 0 01.814-.162l13.5 5.625a.75.75 0 010 1.364l-13.5 5.625a.75.75 0 01-1.04-.898L4.96 10 2.879 4.341a.75.75 0 01.226-.736z" />
+    </svg>
+  ),
+  Check: (p) => (
+    <svg
+      {...p}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4.5 10.5l4 4 7-8"
+      />
+    </svg>
+  ),
+  X: (p) => (
+    <svg
+      {...p}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M5 5l10 10M15 5L5 15"
+      />
+    </svg>
+  ),
+  Warn: (p) => (
+    <svg {...p} viewBox="0 0 20 20" fill="currentColor">
+      <path
+        fillRule="evenodd"
+        d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+      />
+    </svg>
+  ),
+  People: (p) => (
+    <svg {...p} viewBox="0 0 20 20" fill="currentColor">
+      <path d="M7 8a3 3 0 100-6 3 3 0 000 6zM14.5 9a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM1.615 16.428a1.224 1.224 0 01-.015-.224A6.5 6.5 0 0113.5 9.5a6.5 6.5 0 016.385 5.204c.006.073.009.148.009.224H1.615zM14.5 16a6.5 6.5 0 00-5.5-6.416A4.001 4.001 0 0118.5 14h-4z" />
+    </svg>
+  ),
+  Edit: (p) => (
+    <svg
+      {...p}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M13.586 3.586a2 2 0 012.828 2.828L7.5 15.328l-3.5.672.672-3.5 8.914-8.914z"
+      />
+    </svg>
+  ),
+  Plus: (p) => (
+    <svg
+      {...p}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12M4 10h12" />
+    </svg>
+  ),
+  Trash: (p) => (
+    <svg
+      {...p}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M6 5h8M8 5V3h4v2M7 5v10a1 1 0 001 1h4a1 1 0 001-1V5H7z"
+      />
+    </svg>
+  ),
+  Image: (p) => (
+    <svg {...p} viewBox="0 0 20 20" fill="currentColor">
+      <path
+        fillRule="evenodd"
+        d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z"
+      />
+    </svg>
+  ),
+};
+
+// ─── shared components ────────────────────────────────────────────────────────
+
+function Pill({ status }) {
+  const s = STATUS[status] ?? {
+    label: status,
+    pill: "bg-slate-100 text-slate-600",
+    pulse: false,
+  };
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${s.pill}`}
+    >
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${s.bar} ${s.pulse ? "animate-pulse" : ""}`}
+      />
+      {s.label}
+    </span>
+  );
+}
+
+function RBadge({ status }) {
+  const s = RSTATUS[status] ?? {
+    label: status,
+    cls: "bg-slate-100 text-slate-500",
+  };
+  return (
+    <span
+      className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${s.cls}`}
+    >
+      {s.label}
+    </span>
+  );
+}
+
+function Bar({ sent, failed, total }) {
+  const sp = total > 0 ? Math.round((sent / total) * 100) : 0;
+  const fp = total > 0 ? Math.round((failed / total) * 100) : 0;
+  return (
+    <div>
+      <div className="mb-1 flex justify-between text-xs text-slate-500">
+        <span>
+          {sent} delivered · {failed} failed ·{" "}
+          {Math.max(0, total - sent - failed)} pending
+        </span>
+        <span className="font-semibold text-slate-700">{sp + fp}%</span>
+      </div>
+      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+        <div
+          className="h-full bg-green-600 transition-all duration-700"
+          style={{ width: `${sp}%` }}
+        />
+        <div
+          className="h-full bg-red-400 transition-all duration-700"
+          style={{ width: `${fp}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function Spin({ cls = "h-4 w-4" }) {
+  return (
+    <svg
+      className={`animate-spin text-slate-400 ${cls}`}
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+      />
+    </svg>
+  );
+}
+
+function Stat({ label, value, accent }) {
+  return (
+    <div
+      className={`rounded-xl border px-4 py-3 text-center ${accent ? "border-green-200 bg-green-50" : "border-slate-200 bg-white"}`}
+    >
+      <div
+        className={`text-2xl font-bold ${accent ? "text-green-700" : "text-slate-900"}`}
+      >
+        {value}
+      </div>
+      <div className="mt-0.5 text-xs font-medium text-slate-400">{label}</div>
+    </div>
+  );
+}
+
+function Banner({ status, sentCount, completedAt, metaRejectionReason }) {
+  if (status === "SUBMITTED")
+    return (
+      <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+        <Icon.Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+        <div>
+          <p className="text-sm font-semibold text-amber-800">
+            Waiting for Meta to approve the template
+          </p>
+          <p className="mt-0.5 text-xs text-amber-600">
+            Usually takes 1–10 minutes. This page updates automatically.
+          </p>
+        </div>
+      </div>
+    );
+  if (status === "SCHEDULED")
+    return (
+      <div className="mb-5 flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
+        <Icon.Send className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
+        <div>
+          <p className="text-sm font-semibold text-blue-800">
+            Messages are on their way
+          </p>
+          <p className="mt-0.5 text-xs text-blue-600">
+            Delivery statuses refresh every 6 seconds.
+          </p>
+        </div>
+      </div>
+    );
+  if (status === "COMPLETED")
+    return (
+      <div className="mb-5 flex items-start gap-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3">
+        <Icon.Check className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
+        <div>
+          <p className="text-sm font-semibold text-green-800">
+            Campaign complete
+          </p>
+          <p className="mt-0.5 text-xs text-green-700">
+            {sentCount ?? 0} message{(sentCount ?? 0) !== 1 ? "s" : ""}{" "}
+            delivered.
+            {completedAt && ` Finished ${fmt(completedAt)}.`}
+          </p>
+        </div>
+      </div>
+    );
+  if (status === "REJECTED")
+    return (
+      <div className="mb-5 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+        <Icon.X className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+        <div>
+          <p className="text-sm font-semibold text-red-800">
+            Template rejected by Meta
+          </p>
+          {metaRejectionReason && (
+            <p className="mt-0.5 text-xs text-red-600">{metaRejectionReason}</p>
+          )}
+        </div>
+      </div>
+    );
+  if (status === "CANCELLED")
+    return (
+      <div className="mb-5 flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <Icon.X className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+        <p className="text-sm text-slate-600">This campaign was cancelled.</p>
+      </div>
+    );
+  return null;
+}
+
+// ─── WhatsApp mock preview ────────────────────────────────────────────────────
+//
+// Renders a read-only phone-frame with the live template content.
+// Shows header (text / image placeholder), body, footer, and button chips.
+
+function WAMockup({ header, body, footer, buttons, createdAt }) {
+  const hasButtons = buttons?.filter((b) => b.text?.trim()).length > 0;
+
+  return (
+    <div className="flex flex-col items-center">
+      {/* Phone frame */}
+      <div
+        className="relative w-full max-w-[260px] overflow-hidden rounded-3xl border-[6px] border-slate-800 bg-slate-800 shadow-2xl"
+        style={{ aspectRatio: "9/18" }}
+      >
+        {/* Status bar */}
+        <div className="flex h-7 items-center justify-between bg-[#075E54] px-3">
+          <div className="flex items-center gap-1.5">
+            <div className="h-3 w-3 rounded-full bg-white/20" />
+            <span className="text-[9px] font-semibold text-white/70">
+              Golf Care
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="h-1 w-1 rounded-full bg-green-400" />
+            <span className="text-[8px] text-white/60">online</span>
+          </div>
+        </div>
+
+        {/* Chat area */}
+        <div className="flex h-full flex-col bg-[#eae6df] px-2 pt-2 pb-12">
+          {/* Message bubble */}
+          <div className="self-start w-[92%]">
+            <div className="overflow-hidden rounded-2xl rounded-tl-none bg-white shadow-sm">
+              {/* Header */}
+              {header?.type === "TEXT" && header.text?.trim() && (
+                <div className="border-b border-slate-100 px-3 pt-2.5 pb-1.5">
+                  <p className="text-[11px] font-bold leading-tight text-slate-900">
+                    {header.text}
+                  </p>
+                </div>
+              )}
+              {header?.type === "IMAGE" && (
+                <div className="flex h-24 items-center justify-center bg-slate-100">
+                  {header.imageUrl ? (
+                    <img
+                      src={header.imageUrl}
+                      alt="Header"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center gap-1 text-slate-400">
+                      <Icon.Image className="h-6 w-6" />
+                      <span className="text-[9px]">Image header</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Body */}
+              <div className="px-3 py-2.5">
+                <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-slate-800">
+                  {body || (
+                    <span className="italic text-slate-400">Message body…</span>
+                  )}
+                </p>
+                {/* Footer */}
+                {footer?.text?.trim() && (
+                  <p className="mt-1.5 text-[9.5px] text-slate-400">
+                    {footer.text}
+                  </p>
+                )}
+                <p className="mt-1 text-right text-[8px] text-slate-400">
+                  {fmtShort(createdAt || new Date())}
+                </p>
+              </div>
+
+              {/* Buttons */}
+              {hasButtons && (
+                <div className="divide-y divide-slate-100 border-t border-slate-100">
+                  {buttons
+                    .filter((b) => b.text?.trim())
+                    .map((b, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center justify-center px-3 py-2"
+                      >
+                        <span className="text-[10px] font-semibold text-[#128C7E]">
+                          {b.text}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Home bar */}
+        <div className="absolute bottom-2 left-1/2 h-1 w-20 -translate-x-1/2 rounded-full bg-white/30" />
+      </div>
+      <p className="mt-2 text-xs text-slate-400">Live preview</p>
+    </div>
+  );
+}
+
+// ─── TemplateEditor ────────────────────────────────────────────────────────────
+//
+// Only shown for DRAFT campaigns.
+// Tabs: Header | Body | Footer | Buttons
+// Right panel: live WAMockup
+// Save button: PATCH /api/campaigns/:id/template
+
+const HEADER_TYPES = ["NONE", "TEXT", "IMAGE"];
+
+function TemplateEditor({ campaign, onSaved }) {
+  const [tab, setTab] = useState("body");
+
+  // local state — mirrors what goes to the server
+  const [header, setHeader] = useState({
+    type: campaign.headerType || "NONE",
+    text: campaign.headerText || "",
+    imageUrl: campaign.headerImageUrl || "",
+  });
+  const [body, setBody] = useState(campaign.bodyText || "");
+  const [footer, setFooter] = useState({ text: campaign.footerText || "" });
+  const [buttons, setButtons] = useState(
+    campaign.buttons?.length
+      ? campaign.buttons
+      : [{ type: "QUICK_REPLY", text: "" }],
+  );
+
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [saved, setSaved] = useState(false);
+
+  // body char count
+  const bodyCount = body.length;
+  const bodyOver = bodyCount > 1024;
+
+  // button helpers
+  function addButton() {
+    if (buttons.length >= 3) return;
+    setButtons((prev) => [...prev, { type: "QUICK_REPLY", text: "" }]);
+  }
+  function removeButton(i) {
+    setButtons((prev) => prev.filter((_, idx) => idx !== i));
+  }
+  function updateButton(i, field, value) {
+    setButtons((prev) =>
+      prev.map((b, idx) => (idx === i ? { ...b, [field]: value } : b)),
+    );
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setSaveError(null);
+    setSaved(false);
+    try {
+      const payload = {
+        bodyText: body,
+        headerType: header.type,
+        headerText: header.type === "TEXT" ? header.text : null,
+        headerImageUrl: header.type === "IMAGE" ? header.imageUrl : null,
+        footerText: footer.text || null,
+        buttons: buttons
+          .filter((b) => b.text?.trim())
+          .map((b) => ({ type: b.type, text: b.text.trim() })),
+      };
+      const res = await updateCampaignTemplate(campaign.id, payload);
+      setSaved(true);
+      onSaved?.(res.data.data ?? { ...campaign, ...payload });
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      setSaveError(err.response?.data?.error ?? "Failed to save. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const TABS = [
+    { id: "body", label: "Body" },
+    { id: "header", label: "Header" },
+    { id: "footer", label: "Footer" },
+    { id: "buttons", label: "Buttons" },
+  ];
+
+  return (
+    <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
+      {/* Panel header */}
+      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <Icon.Edit className="h-4 w-4 text-slate-400" />
+          <span className="text-xs font-semibold text-slate-600">
+            Edit Template
+          </span>
+        </div>
+        <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-semibold text-slate-500">
+          Draft only
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-0 lg:flex-row">
+        {/* Left: editor */}
+        <div className="flex-1 border-b border-slate-100 lg:border-b-0 lg:border-r">
+          {/* Tabs */}
+          <div className="flex border-b border-slate-100">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`px-4 py-2.5 text-xs font-semibold transition-colors ${
+                  tab === t.id
+                    ? "border-b-2 border-green-600 text-green-700"
+                    : "text-slate-400 hover:text-slate-600"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="p-4">
+            {/* BODY TAB */}
+            {tab === "body" && (
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-500">
+                  Message Body
+                </label>
+                <textarea
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  rows={5}
+                  className={`w-full rounded-lg border px-3 py-2 text-sm leading-relaxed text-slate-800 focus:outline-none focus:ring-1 focus:ring-green-500 ${
+                    bodyOver
+                      ? "border-red-300 bg-red-50"
+                      : "border-slate-200 bg-slate-50"
+                  }`}
+                  placeholder="Hi {{1}}, ..."
+                />
+                <div className="mt-1.5 flex items-center justify-between">
+                  <p className="text-xs text-slate-400">
+                    Must start with{" "}
+                    <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px]">
+                      Hi {"{{1}}"},"
+                    </code>
+                  </p>
+                  <span
+                    className={`text-xs font-medium ${bodyOver ? "text-red-500" : bodyCount > 900 ? "text-amber-500" : "text-slate-400"}`}
+                  >
+                    {bodyCount}/1024
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* HEADER TAB */}
+            {tab === "header" && (
+              <div className="space-y-4">
+                <div>
+                  <label className="mb-1.5 block text-xs font-semibold text-slate-500">
+                    Header Type
+                  </label>
+                  <div className="flex gap-2">
+                    {HEADER_TYPES.map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => setHeader((h) => ({ ...h, type: t }))}
+                        className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                          header.type === t
+                            ? "bg-green-700 text-white"
+                            : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        {t === "NONE"
+                          ? "None"
+                          : t === "TEXT"
+                            ? "Text"
+                            : "Image"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {header.type === "TEXT" && (
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold text-slate-500">
+                      Header Text
+                    </label>
+                    <input
+                      type="text"
+                      value={header.text}
+                      onChange={(e) =>
+                        setHeader((h) => ({ ...h, text: e.target.value }))
+                      }
+                      maxLength={60}
+                      placeholder="e.g. Golf Care Members"
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                    />
+                    <p className="mt-1 text-xs text-slate-400">
+                      Max 60 characters. No variables allowed.
+                    </p>
+                  </div>
+                )}
+
+                {header.type === "IMAGE" && (
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold text-slate-500">
+                      Image URL
+                    </label>
+                    <input
+                      type="url"
+                      value={header.imageUrl}
+                      onChange={(e) =>
+                        setHeader((h) => ({ ...h, imageUrl: e.target.value }))
+                      }
+                      placeholder="https://..."
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                    />
+                    <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 space-y-1">
+                      <p className="font-semibold text-slate-600">
+                        Image requirements (Meta)
+                      </p>
+                      <p>· Ratio: 800×418 px (16:9)</p>
+                      <p>· Max size: 5 MB</p>
+                      <p>· Formats: JPG, PNG</p>
+                      <p>· Text must cover less than 20% of image</p>
+                    </div>
+                  </div>
+                )}
+
+                {header.type === "NONE" && (
+                  <p className="text-sm text-slate-400 italic">
+                    No header will be shown. The message starts directly with
+                    the body.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* FOOTER TAB */}
+            {tab === "footer" && (
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-500">
+                  Footer Text
+                </label>
+                <input
+                  type="text"
+                  value={footer.text}
+                  onChange={(e) => setFooter({ text: e.target.value })}
+                  maxLength={60}
+                  placeholder="e.g. Reply STOP to unsubscribe"
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                />
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Footer appears in smaller, muted text below the body. Optional
+                  but recommended for opt-out instructions.
+                </p>
+              </div>
+            )}
+
+            {/* BUTTONS TAB */}
+            {tab === "buttons" && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-500">
+                    Reply Buttons
+                  </label>
+                  <button
+                    onClick={addButton}
+                    disabled={buttons.length >= 3}
+                    className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Icon.Plus className="h-3 w-3" />
+                    Add button
+                  </button>
+                </div>
+
+                {buttons.length === 0 && (
+                  <p className="text-sm text-slate-400 italic">
+                    No buttons. Add up to 3 quick-reply buttons.
+                  </p>
+                )}
+
+                {buttons.map((btn, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <div className="flex-1">
+                      <input
+                        type="text"
+                        value={btn.text}
+                        onChange={(e) =>
+                          updateButton(i, "text", e.target.value)
+                        }
+                        maxLength={25}
+                        placeholder={`Button ${i + 1} label`}
+                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                      />
+                    </div>
+                    <select
+                      value={btn.type}
+                      onChange={(e) => updateButton(i, "type", e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-xs text-slate-600 focus:border-green-500 focus:outline-none"
+                    >
+                      <option value="QUICK_REPLY">Quick Reply</option>
+                      <option value="PHONE_NUMBER">Call</option>
+                      <option value="URL">URL</option>
+                    </select>
+                    <button
+                      onClick={() => removeButton(i)}
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500"
+                    >
+                      <Icon.Trash className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+
+                <p className="text-xs text-slate-400">
+                  Quick Reply buttons let customers respond with one tap. Max 3
+                  buttons, 25 chars each.
+                </p>
+              </div>
+            )}
+
+            {/* Save error */}
+            {saveError && (
+              <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                <Icon.Warn className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500" />
+                {saveError}
+              </div>
+            )}
+
+            {/* Save button */}
+            <div className="mt-4 flex items-center gap-3">
+              <button
+                onClick={handleSave}
+                disabled={saving || bodyOver}
+                className="flex items-center gap-2 rounded-lg bg-green-700 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {saving ? (
+                  <>
+                    <Spin cls="h-3.5 w-3.5" /> Saving…
+                  </>
+                ) : (
+                  "Save changes"
+                )}
+              </button>
+              {saved && (
+                <span className="flex items-center gap-1 text-xs font-semibold text-green-600">
+                  <Icon.Check className="h-3.5 w-3.5" /> Saved
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Right: live preview */}
+        <div className="flex items-start justify-center p-4 lg:w-72 xl:w-80">
+          <WAMockup
+            header={header}
+            body={body}
+            footer={footer}
+            buttons={buttons}
+            createdAt={campaign.createdAt}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── main ─────────────────────────────────────────────────────────────────────
+
+export default function Campaigns() {
+  useEffect(() => {
+    document.title = "Campaigns — GolfCare";
+  }, []);
+
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const [campaigns, setCampaigns] = useState([]);
+  const [loadingList, setLoadingList] = useState(true);
+  const [selectedId, setSelectedId] = useState(searchParams.get("id") ?? null);
+  const [detail, setDetail] = useState(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionError, setActionError] = useState(null);
+  const [mobileView, setMobileView] = useState(
+    searchParams.get("id") ? "detail" : "list",
+  );
+  const pollRef = useRef(null);
+
+  const loadList = useCallback(async () => {
+    try {
+      const res = await listCampaigns({ limit: 50 });
+      const list = res.data.data ?? [];
+      setCampaigns(list);
+      return list;
+    } catch (e) {
+      console.error(e);
+      return [];
+    } finally {
+      setLoadingList(false);
+    }
+  }, []);
+
+  const loadDetail = useCallback(async (id) => {
+    if (!id) return;
+    try {
+      const res = await getCampaign(id);
+      const c = res.data.data;
+      setDetail(c);
+      setCampaigns((prev) =>
+        prev.map((x) =>
+          x.id === id
+            ? {
+                ...x,
+                status: c.status,
+                sentCount: c.sentCount,
+                failedCount: c.failedCount,
+              }
+            : x,
+        ),
+      );
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingDetail(false);
+    }
+  }, []);
+
+  const detailId = detail?.id;
+  const detailStatus = detail?.status;
+  useEffect(() => {
+    clearInterval(pollRef.current);
+    if (detailId && POLLING.has(detailStatus)) {
+      pollRef.current = setInterval(() => loadDetail(detailId), POLL_MS);
+    }
+    return () => clearInterval(pollRef.current);
+  }, [detailStatus, detailId, loadDetail]);
+
+  function select(id) {
+    setSelectedId(id);
+    setSearchParams(id ? { id } : {});
+    setDetail(null);
+    setActionError(null);
+    setLoadingDetail(true);
+    setMobileView("detail");
+    loadDetail(id);
+  }
+
+  function goBack() {
+    setMobileView("list");
+    setSelectedId(null);
+    setDetail(null);
+    setSearchParams({});
+  }
+
+  useEffect(() => {
+    async function init() {
+      const list = await loadList();
+      const urlId = new URLSearchParams(window.location.search).get("id");
+      if (urlId) {
+        setLoadingDetail(true);
+        loadDetail(urlId);
+      } else if (list.length > 0) {
+        select(list[0].id);
+      }
+    }
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadList, loadDetail]);
+
+  async function handleSubmit() {
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await submitCampaign(detail.id);
+      await loadDetail(detail.id);
+      await loadList();
+    } catch (e) {
+      setActionError(e.response?.data?.error ?? "Failed to submit.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleSend() {
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await sendCampaign(detail.id);
+      await loadDetail(detail.id);
+      await loadList();
+    } catch (e) {
+      setActionError(e.response?.data?.error ?? "Failed to send.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleCancel() {
+    if (!window.confirm("Cancel this campaign? This cannot be undone.")) return;
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await cancelCampaign(detail.id);
+      await loadDetail(detail.id);
+      await loadList();
+    } catch (e) {
+      setActionError(e.response?.data?.error ?? "Failed to cancel.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  // ─── list panel ─────────────────────────────────────────────────────────────
+  const ListPanel = (
+    <div className="flex h-full flex-col">
+      <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-700">
+            <MegaphoneIcon />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold text-slate-900 sm:text-lg">
+              Campaigns
+            </h1>
+            <p className="text-xs text-slate-400 sm:text-sm">
+              WhatsApp broadcast messages
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {loadingList ? (
+        <div className="flex flex-1 items-center justify-center gap-2 text-sm text-slate-400">
+          <Spin /> Loading…
+        </div>
+      ) : campaigns.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-green-50 text-green-700">
+            <MegaphoneIcon />
+          </div>
+          <div>
+            <p className="font-semibold text-slate-700">No campaigns yet</p>
+            <p className="mt-1 max-w-xs text-sm text-slate-400">
+              Open the Insights widget and ask it to send a message to your
+              members.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto">
+          {campaigns.map((c) => {
+            const active = selectedId === c.id;
+            return (
+              <button
+                key={c.id}
+                onClick={() => select(c.id)}
+                className={`group w-full border-b border-slate-100 px-4 py-3.5 text-left transition-colors last:border-b-0 sm:px-5
+                  ${active ? "border-l-[3px] border-l-green-700 bg-green-50" : "hover:bg-slate-50"}`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span
+                    className={`min-w-0 truncate text-sm font-semibold leading-snug ${active ? "text-green-800" : "text-slate-800"}`}
+                  >
+                    {c.name}
+                  </span>
+                  <Pill status={c.status} />
+                </div>
+                <div className="mt-1 flex items-center gap-1 text-xs text-slate-400">
+                  <Icon.People className="h-3 w-3" />
+                  <span>{c.audienceSize ?? 0}</span>
+                  <span className="mx-1 text-slate-200">|</span>
+                  <span>{fmtShort(c.createdAt)}</span>
+                </div>
+                {["SCHEDULED", "COMPLETED"].includes(c.status) && (
+                  <div className="mt-2.5">
+                    <Bar
+                      sent={c.sentCount || 0}
+                      failed={c.failedCount || 0}
+                      total={c.audienceSize || 0}
+                    />
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  // ─── detail panel ─────────────────────────────────────────────────────────
+  const DetailPanel = (
+    <div className="flex h-full flex-col overflow-y-auto">
+      {/* mobile back bar */}
+      <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-3 lg:hidden">
+        <button
+          onClick={goBack}
+          className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm font-medium text-green-700 hover:bg-green-50 transition-colors"
+        >
+          <Icon.Back className="h-4 w-4" />
+          Campaigns
+        </button>
+      </div>
+
+      {loadingDetail && !detail ? (
+        <div className="flex flex-1 items-center justify-center gap-2 text-sm text-slate-400">
+          <Spin /> Loading…
+        </div>
+      ) : !detail ? (
+        <div className="hidden flex-1 items-center justify-center text-sm text-slate-300 lg:flex">
+          Select a campaign
+        </div>
+      ) : (
+        <div className="mx-auto w-full max-w-3xl p-4 sm:p-6">
+          {/* title */}
+          <div className="mb-5">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h2 className="text-lg font-bold text-slate-900 sm:text-xl">
+                {detail.name}
+              </h2>
+              <Pill status={detail.status} />
+              {loadingDetail && <Spin />}
+            </div>
+            <p className="mt-1 text-xs text-slate-400">
+              Created {fmt(detail.createdAt)}
+              {detail.confirmedAt && ` · Submitted ${fmt(detail.confirmedAt)}`}
+              {detail.metaApprovedAt &&
+                ` · Approved ${fmt(detail.metaApprovedAt)}`}
+            </p>
+          </div>
+
+          {/* status banner */}
+          <Banner
+            status={detail.status}
+            sentCount={detail.sentCount}
+            completedAt={detail.completedAt}
+            metaRejectionReason={detail.metaRejectionReason}
+          />
+
+          {/* stats */}
+          <div className="mb-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            <Stat label="Audience" value={detail.audienceSize ?? 0} />
+            <Stat label="Delivered" value={detail.sentCount ?? 0} accent />
+            <Stat label="Failed" value={detail.failedCount ?? 0} />
+            <Stat label="Skipped" value={detail.skippedCount ?? 0} />
+          </div>
+
+          {/* progress bar */}
+          {["SCHEDULED", "COMPLETED"].includes(detail.status) && (
+            <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4">
+              <Bar
+                sent={detail.sentCount || 0}
+                failed={detail.failedCount || 0}
+                total={detail.audienceSize || 0}
+              />
+            </div>
+          )}
+
+          {/* ── Template editor (DRAFT only) ── */}
+          {detail.status === "DRAFT" && (
+            <TemplateEditor
+              campaign={detail}
+              onSaved={(updated) =>
+                setDetail((prev) => ({ ...prev, ...updated }))
+              }
+            />
+          )}
+
+          {/* ── Message preview (non-DRAFT) ── */}
+          {detail.status !== "DRAFT" && (
+            <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <div className="border-b border-slate-100 px-4 py-2.5">
+                <span className="text-xs font-semibold text-slate-400">
+                  Message
+                </span>
+              </div>
+              <div className="flex flex-col items-start gap-4 bg-[#eae6df] px-4 pb-4 pt-3 sm:flex-row">
+                <div className="inline-block max-w-xs rounded-2xl rounded-tl-sm bg-white px-3.5 py-2.5 shadow-sm sm:max-w-sm">
+                  {detail.headerText && (
+                    <p className="mb-1 border-b border-slate-100 pb-1 text-xs font-bold text-slate-800">
+                      {detail.headerText}
+                    </p>
+                  )}
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
+                    {detail.bodyText}
+                  </p>
+                  {detail.footerText && (
+                    <p className="mt-1 text-xs text-slate-400">
+                      {detail.footerText}
+                    </p>
+                  )}
+                  <p className="mt-1 text-right text-[10px] text-slate-400">
+                    {fmtShort(detail.createdAt)}
+                  </p>
+                </div>
+              </div>
+              <div className="border-t border-slate-100 px-4 py-2.5">
+                <span className="text-xs text-slate-400">Template: </span>
+                <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
+                  {detail.templateName}
+                </code>
+                {detail.agentPrompt && (
+                  <p className="mt-1 text-xs italic text-slate-400">
+                    "{detail.agentPrompt}"
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* recipients */}
+          {detail.BroadcastRecipient?.length > 0 && (
+            <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
+                <span className="text-xs font-semibold text-slate-400">
+                  Recipients
+                </span>
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
+                  {detail.BroadcastRecipient.length}
+                </span>
+              </div>
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs font-semibold text-slate-400">
+                      <th className="px-4 py-2.5">Name</th>
+                      <th className="px-4 py-2.5">Phone</th>
+                      <th className="px-4 py-2.5">Status</th>
+                      <th className="px-4 py-2.5">Note</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {detail.BroadcastRecipient.map((r) => (
+                      <tr key={r.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5 font-medium text-slate-800">
+                          {r.firstName || "—"}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-slate-500">
+                          {r.phone}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <RBadge status={r.status} />
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-slate-400">
+                          {r.skipReason ||
+                            r.errorMessage ||
+                            (r.sentAt ? fmt(r.sentAt) : "—")}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="divide-y divide-slate-100 sm:hidden">
+                {detail.BroadcastRecipient.map((r) => (
+                  <div
+                    key={r.id}
+                    className="flex items-center justify-between px-4 py-3"
+                  >
+                    <div>
+                      <p className="text-sm font-semibold text-slate-800">
+                        {r.firstName || "—"}
+                      </p>
+                      <p className="mt-0.5 font-mono text-xs text-slate-400">
+                        {r.phone}
+                      </p>
+                      {(r.skipReason || r.errorMessage || r.sentAt) && (
+                        <p className="mt-0.5 text-xs text-slate-400">
+                          {r.skipReason || r.errorMessage || fmt(r.sentAt)}
+                        </p>
+                      )}
+                    </div>
+                    <RBadge status={r.status} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* action error */}
+          {actionError && (
+            <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <Icon.Warn className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+              {actionError}
+            </div>
+          )}
+
+          {/* actions */}
+          {!DONE.has(detail.status) && (
+            <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+              {detail.status === "DRAFT" && (
+                <button
+                  onClick={handleSubmit}
+                  disabled={actionLoading}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-700 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                >
+                  {actionLoading ? (
+                    <>
+                      <Spin /> Submitting…
+                    </>
+                  ) : (
+                    "Submit to Meta for approval"
+                  )}
+                </button>
+              )}
+              {detail.status === "READY" && (
+                <button
+                  onClick={handleSend}
+                  disabled={actionLoading}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-700 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                >
+                  {actionLoading ? (
+                    <>
+                      <Spin /> Scheduling…
+                    </>
+                  ) : (
+                    <>
+                      <Icon.Send className="h-4 w-4" /> Send to{" "}
+                      {detail.audienceSize ?? 0} members
+                    </>
+                  )}
+                </button>
+              )}
+              {!["COMPLETED", "FAILED"].includes(detail.status) && (
+                <button
+                  onClick={handleCancel}
+                  disabled={actionLoading}
+                  className="flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  // ─── layout ──────────────────────────────────────────────────────────────────
+  return (
+    <div className="flex h-full flex-col bg-slate-50">
+      <div className="hidden h-full lg:flex">
+        <div className="w-72 shrink-0 overflow-hidden border-r border-slate-200 bg-white xl:w-80">
+          {ListPanel}
+        </div>
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {DetailPanel}
+        </div>
+      </div>
+      <div className="flex h-full flex-col lg:hidden">
+        {mobileView === "list" ? ListPanel : DetailPanel}
+      </div>
+    </div>
+  );
+}

@@ -11,15 +11,12 @@ import Customers from "./pages/Customers";
 import Products from "./pages/Products";
 import Suppliers from "./pages/Suppliers";
 import AuditLog from "./pages/AuditLog";
+import Campaigns from "./pages/Campaigns";
 import AgentUsage from "./pages/AgentUsage";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 import { registerTokenGetter } from "./api/apiClient";
 import { addUserToBackend } from "./api/users";
-
-function Placeholder({ name }) {
-  return <div className="text-gray-500">{name} — coming soon</div>;
-}
 
 function NoAccountScreen() {
   const { logout } = useKindeAuth();
@@ -42,7 +39,6 @@ function NoAccountScreen() {
 
 export default function App() {
   const { isAuthenticated, user, getToken } = useKindeAuth();
-  // null = not checked yet, true/false once we know
   const [staffOk, setStaffOk] = useState(null);
 
   useEffect(() => {
@@ -51,9 +47,6 @@ export default function App() {
     }
   }, [isAuthenticated, getToken]);
 
-  // Sync staff user on login. The backend now REJECTS (403) any email that
-  // isn't already a pre-provisioned StaffUser — it never creates one on the
-  // fly. So this call is the actual access gate, not just a data sync.
   useEffect(() => {
     if (!isAuthenticated || !user) return;
 
@@ -67,8 +60,6 @@ export default function App() {
         if (err?.response?.status === 403) {
           setStaffOk(false);
         } else {
-          // Unexpected error (network, 500) — don't silently lock the
-          // person out; let them through and surface the failure elsewhere.
           console.error("Staff sync failed:", err);
           setStaffOk(true);
         }
@@ -100,11 +91,7 @@ export default function App() {
           <Route path="/orders" element={<Orders />} />
           <Route path="/customers" element={<Customers />} />
           <Route path="/suppliers" element={<Suppliers />} />
-          <Route
-            path="/campaigns"
-            element={<Placeholder name="Segments / Campaigns" />}
-          />
-          {/* <Route path="/insights" element={<Placeholder name="Insights" />} /> */}
+          <Route path="/campaigns" element={<Campaigns />} />
           <Route path="/audit-log" element={<AuditLog />} />
           <Route path="/agent-usage" element={<AgentUsage />} />
           <Route path="/settings" element={<Settings />} />

@@ -23,12 +23,7 @@ const NAV_ITEMS = [
   { to: "/orders", label: "Orders", icon: ReceiptIcon },
   { to: "/customers", label: "Customers", icon: UsersIcon },
   { to: "/suppliers", label: "Suppliers", icon: TruckIcon },
-  {
-    to: "/campaigns",
-    label: "Campaigns",
-    icon: MegaphoneIcon,
-    comingSoon: true,
-  },
+  { to: "/campaigns", label: "Campaigns", icon: MegaphoneIcon },
   // { to: "/insights", label: "Insights", icon: SparkIcon, comingSoon: true },
   { to: "/audit-log", label: "Audit Log", icon: ClipboardListIcon },
   { to: "/agent-usage", label: "Agent Usage", icon: SparkIcon },
