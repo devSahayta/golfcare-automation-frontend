@@ -18,6 +18,7 @@ import {
   sendCampaign,
   cancelCampaign,
   updateCampaignTemplate,
+  scheduleCampaign,
 } from "../api/broadcast-campaigns";
 import { MegaphoneIcon } from "../components/icons";
 
@@ -74,6 +75,12 @@ const STATUS = {
     pill: "bg-blue-50 text-blue-700",
     pulse: true,
   },
+  PENDING_SCHEDULE: {
+    label: "Scheduled",
+    bar: "bg-green-500",
+    pill: "bg-green-50 text-green-700",
+    pulse: false,
+  },
   COMPLETED: {
     label: "Completed",
     bar: "bg-green-600",
@@ -108,7 +115,7 @@ const RSTATUS = {
   SKIPPED: { label: "Skipped", cls: "bg-slate-100 text-slate-400" },
 };
 
-const POLLING = new Set(["SUBMITTED", "SCHEDULED"]);
+const POLLING = new Set(["SUBMITTED", "SCHEDULED", "PENDING_SCHEDULE"]);
 const POLL_MS = 6000;
 const DONE = new Set(["COMPLETED", "CANCELLED", "FAILED", "REJECTED"]);
 
@@ -339,7 +346,13 @@ function Stat({ label, value, accent }) {
   );
 }
 
-function Banner({ status, sentCount, completedAt, metaRejectionReason }) {
+function Banner({
+  status,
+  sentCount,
+  completedAt,
+  metaRejectionReason,
+  scheduledFor,
+}) {
   if (status === "SUBMITTED")
     return (
       <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
@@ -364,6 +377,23 @@ function Banner({ status, sentCount, completedAt, metaRejectionReason }) {
           </p>
           <p className="mt-0.5 text-xs text-blue-600">
             Delivery statuses refresh every 6 seconds.
+          </p>
+        </div>
+      </div>
+    );
+  if (status === "PENDING_SCHEDULE")
+    return (
+      <div className="mb-5 flex items-start gap-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3">
+        <Icon.Clock className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
+        <div>
+          <p className="text-sm font-semibold text-green-800">
+            Scheduled to send
+          </p>
+          <p className="mt-0.5 text-xs text-green-700">
+            {scheduledFor
+              ? `Will send on ${fmt(scheduledFor)}.`
+              : "Will send at the scheduled time."}{" "}
+            You can cancel anytime before it starts.
           </p>
         </div>
       </div>
@@ -879,6 +909,8 @@ export default function BroadcastCampaigns() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState(null);
+  const [showScheduler, setShowScheduler] = useState(false);
+  const [scheduledAt, setScheduledAt] = useState("");
   const [mobileView, setMobileView] = useState(
     searchParams.get("id") ? "detail" : "list",
   );
@@ -938,6 +970,8 @@ export default function BroadcastCampaigns() {
     setSearchParams(id ? { id } : {});
     setDetail(null);
     setActionError(null);
+    setShowScheduler(false);
+    setScheduledAt("");
     setLoadingDetail(true);
     setMobileView("detail");
     loadDetail(id);
@@ -988,6 +1022,32 @@ export default function BroadcastCampaigns() {
       await loadList();
     } catch (e) {
       setActionError(e.response?.data?.error ?? "Failed to send.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleSchedule() {
+    if (!scheduledAt) {
+      setActionError("Please pick a date and time to schedule the send.");
+      return;
+    }
+    const iso = new Date(scheduledAt).toISOString();
+    const now = new Date();
+    if (new Date(scheduledAt) <= now) {
+      setActionError("Scheduled time must be in the future.");
+      return;
+    }
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await scheduleCampaign(detail.id, iso);
+      setShowScheduler(false);
+      setScheduledAt("");
+      await loadDetail(detail.id);
+      await loadList();
+    } catch (e) {
+      setActionError(e.response?.data?.error ?? "Failed to schedule.");
     } finally {
       setActionLoading(false);
     }
@@ -1069,7 +1129,9 @@ export default function BroadcastCampaigns() {
                   <span className="mx-1 text-slate-200">|</span>
                   <span>{fmtShort(c.createdAt)}</span>
                 </div>
-                {["SCHEDULED", "COMPLETED"].includes(c.status) && (
+                {["SCHEDULED", "COMPLETED", "PENDING_SCHEDULE"].includes(
+                  c.status,
+                ) && (
                   <div className="mt-2.5">
                     <Bar
                       sent={c.sentCount || 0}
@@ -1133,6 +1195,7 @@ export default function BroadcastCampaigns() {
             sentCount={detail.sentCount}
             completedAt={detail.completedAt}
             metaRejectionReason={detail.metaRejectionReason}
+            scheduledFor={detail.scheduledFor}
           />
 
           {/* stats */}
@@ -1144,7 +1207,9 @@ export default function BroadcastCampaigns() {
           </div>
 
           {/* progress bar */}
-          {["SCHEDULED", "COMPLETED"].includes(detail.status) && (
+          {["SCHEDULED", "COMPLETED", "PENDING_SCHEDULE"].includes(
+            detail.status,
+          ) && (
             <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4">
               <Bar
                 sent={detail.sentCount || 0}
@@ -1285,48 +1350,175 @@ export default function BroadcastCampaigns() {
 
           {/* actions */}
           {!DONE.has(detail.status) && (
-            <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+            <div className="flex flex-col gap-3">
               {detail.status === "DRAFT" && (
-                <button
-                  onClick={handleSubmit}
-                  disabled={actionLoading}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-700 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-                >
-                  {actionLoading ? (
-                    <>
-                      <Spin /> Submitting…
-                    </>
-                  ) : (
-                    "Submit to Meta for approval"
-                  )}
-                </button>
+                <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+                  <button
+                    onClick={handleSubmit}
+                    disabled={actionLoading}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-700 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                  >
+                    {actionLoading ? (
+                      <>
+                        <Spin /> Submitting…
+                      </>
+                    ) : (
+                      "Submit to Meta for approval"
+                    )}
+                  </button>
+                  <button
+                    onClick={handleCancel}
+                    disabled={actionLoading}
+                    className="flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                  >
+                    Cancel
+                  </button>
+                </div>
               )}
+
               {detail.status === "READY" && (
-                <button
-                  onClick={handleSend}
-                  disabled={actionLoading}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-700 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-                >
-                  {actionLoading ? (
-                    <>
-                      <Spin /> Scheduling…
-                    </>
-                  ) : (
-                    <>
-                      <Icon.Send className="h-4 w-4" /> Send to{" "}
-                      {detail.audienceSize ?? 0} members
-                    </>
+                <div className="flex flex-col gap-3">
+                  {/* Primary action row */}
+                  <div className="grid grid-cols-1 gap-2.5 sm:flex sm:flex-wrap sm:items-center">
+                    {/* Send now */}
+                    <button
+                      onClick={handleSend}
+                      disabled={actionLoading}
+                      className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-700 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                    >
+                      {actionLoading && !showScheduler ? (
+                        <>
+                          <Spin /> Sending…
+                        </>
+                      ) : (
+                        <>
+                          <Icon.Send className="h-4 w-4" /> Send now ·{" "}
+                          {detail.audienceSize ?? 0} members
+                        </>
+                      )}
+                    </button>
+
+                    {/* Schedule toggle */}
+                    <button
+                      onClick={() => {
+                        setShowScheduler((v) => !v);
+                        setActionError(null);
+                      }}
+                      disabled={actionLoading}
+                      className={`flex w-full items-center justify-center gap-2 rounded-xl border px-5 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto ${
+                        showScheduler
+                          ? "border-green-600 bg-green-700 text-white hover:bg-green-800"
+                          : "border-green-700 bg-white text-green-700 hover:bg-green-50"
+                      }`}
+                    >
+                      <Icon.Clock className="h-4 w-4" />
+                      {showScheduler ? "Hide scheduler" : "Schedule for later"}
+                    </button>
+
+                    {/* Cancel */}
+                    <button
+                      onClick={handleCancel}
+                      disabled={actionLoading}
+                      className="flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                    >
+                      Cancel campaign
+                    </button>
+                  </div>
+
+                  {/* Scheduler panel — slides open below the buttons */}
+                  {showScheduler && (
+                    <div className="overflow-hidden rounded-xl border border-green-200 bg-green-50">
+                      {/* Header */}
+                      <div className="flex items-center gap-2.5 border-b border-green-200 px-4 py-3">
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-green-700">
+                          <Icon.Clock className="h-3.5 w-3.5 text-white" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-green-900">
+                            Schedule send
+                          </p>
+                          <p className="text-xs text-green-600">
+                            Pick when this campaign goes out to{" "}
+                            {detail.audienceSize ?? 0} members
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Body */}
+                      <div className="p-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-4">
+                          {/* Date/time input */}
+                          <div className="flex flex-1 flex-col gap-1.5">
+                            <label className="text-xs font-semibold text-green-800">
+                              Date &amp; time
+                            </label>
+                            <input
+                              type="datetime-local"
+                              value={scheduledAt}
+                              onChange={(e) => setScheduledAt(e.target.value)}
+                              min={new Date(Date.now() + 60_000)
+                                .toISOString()
+                                .slice(0, 16)}
+                              className="w-full rounded-lg border border-green-300 bg-white px-3 py-2.5 text-sm text-slate-800 shadow-sm focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-200"
+                            />
+                            <p className="flex items-center gap-1 text-xs text-green-600">
+                              <Icon.Clock className="h-3 w-3" />
+                              Time is in your local timezone (IST)
+                            </p>
+                          </div>
+
+                          {/* Confirm button */}
+                          <button
+                            onClick={handleSchedule}
+                            disabled={actionLoading || !scheduledAt}
+                            className="flex w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-green-700 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                          >
+                            {actionLoading && showScheduler ? (
+                              <>
+                                <Spin /> Scheduling…
+                              </>
+                            ) : (
+                              <>
+                                <Icon.Clock className="h-4 w-4" /> Confirm
+                                schedule
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   )}
-                </button>
+                </div>
               )}
-              {!["COMPLETED", "FAILED"].includes(detail.status) && (
-                <button
-                  onClick={handleCancel}
-                  disabled={actionLoading}
-                  className="flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-                >
-                  Cancel
-                </button>
+
+              {detail.status === "SUBMITTED" && (
+                <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+                  <button
+                    onClick={handleCancel}
+                    disabled={actionLoading}
+                    className="flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              {detail.status === "PENDING_SCHEDULE" && (
+                <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+                  <button
+                    onClick={handleCancel}
+                    disabled={actionLoading}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                  >
+                    {actionLoading ? (
+                      <>
+                        <Spin /> Cancelling…
+                      </>
+                    ) : (
+                      "Cancel scheduled send"
+                    )}
+                  </button>
+                </div>
               )}
             </div>
           )}
