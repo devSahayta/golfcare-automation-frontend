@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { Toaster } from "react-hot-toast";
 import { useKindeAuth } from "@kinde-oss/kinde-auth-react";
 import ProtectedRoute from "./components/ProtectedRoute";
 import DashboardLayout from "./components/DashboardLayout";
@@ -76,11 +77,17 @@ export default function App() {
   }, [isAuthenticated, user]);
 
   if (isAuthenticated && staffOk === false) {
-    return <NoAccountScreen />;
+    return (
+      <>
+        <Toaster position="top-right" />
+        <NoAccountScreen />
+      </>
+    );
   }
 
   return (
     <BrowserRouter>
+      <Toaster position="top-right" />
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route

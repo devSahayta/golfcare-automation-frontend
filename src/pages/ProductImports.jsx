@@ -8,6 +8,7 @@
 // the two paths can't drift apart.
 
 import { useEffect, useState } from "react";
+import toast from "react-hot-toast";
 import {
   fetchProductImportSummary,
   fetchProductDrafts,
@@ -567,6 +568,9 @@ export default function ProductImports() {
   );
 
   const decide = async (id, action) => {
+    const title =
+      [selectedDraft, ...(queue.data?.data || []), ...(drafts.data?.data || [])].find((d) => d?.id === id)?.title ||
+      "Product";
     setBusyId(id);
     setActionError(null);
     try {
@@ -574,8 +578,13 @@ export default function ProductImports() {
       else await rejectProductDraft(id);
       setSelectedDraft(null);
       setRefreshTick((t) => t + 1);
+      toast.success(
+        action === "approve" ? `${title} approved and published to Shopify` : `${title} rejected and removed from Shopify`,
+      );
     } catch (err) {
-      setActionError(err.response?.data?.error || "Couldn't record that decision. Try again.");
+      const message = err.response?.data?.error || "Couldn't record that decision. Try again.";
+      setActionError(message);
+      toast.error(message);
     } finally {
       setBusyId(null);
     }
