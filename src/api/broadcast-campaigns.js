@@ -12,6 +12,10 @@ export const submitCampaign = (id) =>
 export const sendCampaign = (id) =>
   api.post(`/api/broadcast-campaigns/${id}/send`);
 
+export function scheduleCampaign(id, scheduledAt) {
+  return api.post(`/api/broadcast-campaigns/${id}/schedule`, { scheduledAt });
+}
+
 export const cancelCampaign = (id) =>
   api.post(`/api/broadcast-campaigns/${id}/cancel`);
 
@@ -36,4 +40,20 @@ export async function updateCampaignTemplate(id, payload) {
 export const previewCampaignImage = (payload) =>
   api
     .post("/api/broadcast-campaigns/preview-image", payload)
+    .then((r) => r.data);
+
+// Edits the eyebrow/headline/badge wording on an already-generated image
+// WITHOUT calling the AI image generator again — re-draws just the text
+// layer over the persisted backdrop from the original preview. Near-instant.
+export const recomposeCampaignImageText = (payload) =>
+  api
+    .post("/api/broadcast-campaigns/preview-image/text", payload)
+    .then((r) => r.data);
+
+// Path A — deterministic catalog lookup. Checks whether the campaign is
+// about one real, named product already in the catalog before any AI
+// image generation is attempted.
+export const resolveProductImage = (query) =>
+  api
+    .post("/api/broadcast-campaigns/resolve-product-image", { query })
     .then((r) => r.data);

@@ -7,7 +7,16 @@
 // Campaign flow (v2):
 //   1. Agent calls preview_audience → confirms audience in chat
 //   2. Agent calls suggest_campaign_content → returns 3 variants (no DB write)
-//      Each variant: { label, tone, bodyText, headerType, headerText, headerImagePromptHint, footerText, buttons }
+//      Each variant: { label, tone, bodyText, headerType, headerText, headerImagePromptHint, headerImageHeadline, headerImageProductTitles, footerText, buttons }
+//      headerImageHeadline is optional short wording (e.g. "Celebrate Diwali with Us")
+//      rendered directly into the generated image — see imageGenerationService.js
+//      for why that's a deliberate trade-off, not a default.
+//      headerImageProductTitles is optional — set only when the campaign names real
+//      catalog products the agent already confirmed via check_product_photo. When
+//      present, the backend composites those REAL photos into the image instead of
+//      drawing a generic AI stand-in — see imageCompositingService.js. The widget
+//      surfaces which titles matched/didn't under the preview (see imgS.matchedProductTitles
+//      / imgS.unmatchedProductTitles below) so staff can see this at a glance.
 //   3. Frontend shows CampaignContentPicker with 3 selectable variants + editable text
 //   4. Staff picks/edits → clicks "Save Draft" → frontend POSTs to /api/campaigns/draft
 //      then PATCHes /api/campaigns/:id/template with full component data
@@ -21,6 +30,7 @@ import {
   saveCampaignDraft,
   updateCampaignTemplate,
   previewCampaignImage as previewCampaignImageApi,
+  recomposeCampaignImageText as recomposeCampaignImageTextApi,
 } from "../api/broadcast-campaigns";
 import {
   GolfFlagMark,
@@ -100,6 +110,61 @@ function CampaignContentPicker({ data, onSaved }) {
   // double-fire and any other re-render from firing a second Replicate request
   const generatingRef = useRef(new Set());
 
+  // Staff-editable overrides for the on-image eyebrow/headline/badge text,
+  // keyed by variant index. Starts undefined (falls back to the agent's own
+  // wording) and is only populated once staff actually edits a field —
+  // see wordingFor() below, which merges this over the agent's defaults.
+  const [wordingEdits, setWordingEdits] = useState({});
+  const [wordingSaving, setWordingSaving] = useState({});
+
+  function wordingFor(idx) {
+    const variant = data.variants[idx] || {};
+    const override = wordingEdits[idx] || {};
+    return {
+      eyebrow: override.eyebrow ?? variant.headerImageEyebrow ?? "",
+      headline: override.headline ?? variant.headerImageHeadline ?? "",
+      badgeText: override.badgeText ?? variant.headerImageBadgeText ?? "",
+    };
+  }
+
+  function setWordingField(idx, field, value) {
+    setWordingEdits((prev) => ({
+      ...prev,
+      [idx]: { ...wordingFor(idx), [field]: value },
+    }));
+  }
+
+  // Re-draws the text layer over the already-generated backdrop — no new
+  // Flux call, near-instant. Only available once a composite preview has
+  // returned a backdropUrl (the real-product-photo path); the plain
+  // AI-scene path doesn't have a backdrop separate from its final image.
+  async function handleUpdateWording(idx) {
+    const imgS = imageState[idx];
+    if (!imgS?.backdropUrl) return;
+    const variant = data.variants[idx] || {};
+    const wording = wordingFor(idx);
+    setWordingSaving((prev) => ({ ...prev, [idx]: true }));
+    try {
+      const json = await recomposeCampaignImageTextApi({
+        backdropUrl: imgS.backdropUrl,
+        headerImageProductTitles: variant.headerImageProductTitles || null,
+        headerImageEyebrow: wording.eyebrow || null,
+        headerImageHeadline: wording.headline || null,
+        headerImageBadgeText: wording.badgeText || null,
+        campaignName: data.campaignName,
+      });
+      setImageState((prev) => ({
+        ...prev,
+        [idx]: { ...prev[idx], url: json.imageUrl },
+      }));
+    } catch (err) {
+      console.error("recomposeCampaignImageText failed:", err);
+      setError("Failed to update the image wording. Try again.");
+    } finally {
+      setWordingSaving((prev) => ({ ...prev, [idx]: false }));
+    }
+  }
+
   const selectedVariant = data.variants[selectedIdx] || {};
 
   // Auto-generate image when an IMAGE variant is first selected.
@@ -118,7 +183,7 @@ function CampaignContentPicker({ data, onSaved }) {
     generatingRef.current.add(selectedIdx);
 
     let cancelled = false;
-    generateImageForVariant(selectedIdx, variant, () => cancelled);
+    resolveImageForVariant(selectedIdx, variant, () => cancelled);
 
     return () => {
       // On strict-mode cleanup, remove so the real second mount can proceed.
@@ -129,16 +194,136 @@ function CampaignContentPicker({ data, onSaved }) {
     };
   }, [selectedIdx]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Path A(composite) / Path B gate for a variant's IMAGE header.
+  //
+  // The agent — not the frontend — decides whether a real catalog photo
+  // belongs in this image. It runs check_product_photo on every specific
+  // product it finds in the request and, if a real photo should be used
+  // (one product or several — see insightsAgentConfig.js STEP 2.5), sets
+  // headerImageProductTitles with the exact confirmed title(s).
+  //
+  //   - headerImageProductTitles present → generateImageForVariant, which
+  //     composites those exact real photos onto an AI backdrop.
+  //   - headerImageProductTitles absent → generateImageForVariant, which
+  //     generates a fully AI scene from headerImagePromptHint.
+  //
+  // This used to also run its OWN independent check here: fuzzy-matching
+  // the entire campaignName string against the catalog (resolveProductImageApi)
+  // and silently swapping in whatever it found — regardless of what the
+  // agent and staff had already decided. That is what caused a real bug:
+  // a campaign named "Diwali Gift Box - Titleist Pro V1 & Pro V1x Golf
+  // Balls" coincidentally fuzzy-matched a single catalog product by name
+  // alone, and got shown even after the staff explicitly chose "generic
+  // themed image instead". The agent's decision is now the only source of
+  // truth for which path to take — this function no longer re-guesses.
+  async function resolveImageForVariant(
+    idx,
+    variant,
+    isCancelled = () => false,
+  ) {
+    generatingRef.current.add(idx);
+    setImageState((prev) => ({
+      ...prev,
+      [idx]: {
+        url: null,
+        loading: true,
+        error: null,
+        source: null,
+        stage: "checking",
+      },
+    }));
+    await generateImageForVariant(idx, variant, isCancelled);
+  }
+
+  // Staff picked a specific product out of an ambiguous match list.
+  //
+  // Kept for a possible future "swap in a different catalog photo manually"
+  // affordance, but nothing currently calls this automatically — the blind
+  // campaign-name-based auto-lookup that used to drive it was removed (see
+  // resolveImageForVariant above) because it could override the agent's and
+  // staff's own explicit decision about whether to use a real photo at all.
+  function pickProductCandidate(idx, product) {
+    setImageState((prev) => ({
+      ...prev,
+      [idx]: {
+        url: product.imageUrls[0],
+        loading: false,
+        error: null,
+        source: "catalog",
+        images: product.imageUrls,
+        imageIdx: 0,
+        productTitle: product.title,
+      },
+    }));
+  }
+
+  // Cycle to the next real photo for the matched product ("Try another photo").
+  function cycleCatalogImage(idx) {
+    setImageState((prev) => {
+      const cur = prev[idx];
+      if (!cur?.images?.length) return prev;
+      const nextIdx = (cur.imageIdx + 1) % cur.images.length;
+      return {
+        ...prev,
+        [idx]: { ...cur, imageIdx: nextIdx, url: cur.images[nextIdx] },
+      };
+    });
+  }
+
+  // Staff rejected every real photo (or every ambiguous candidate) —
+  // drop down to Path B and generate a themed scene instead.
+  function switchToGeneration(idx, variant) {
+    generatingRef.current.delete(idx);
+    generateImageForVariant(idx, variant);
+  }
+
+  // PRODUCT_PHOTOS_UNRESOLVED recovery — the confirmed product's photo
+  // couldn't be found at generation time. "Try again" re-sends the exact
+  // same request (the lookup failure may be transient); "Generate AI scene
+  // instead" explicitly strips headerImageProductTitles so the backend
+  // takes the fully-AI path on purpose, with the staff member having
+  // chosen that knowingly rather than it happening silently.
+  function retryUnresolved(idx, variant) {
+    generatingRef.current.delete(idx);
+    generateImageForVariant(idx, variant);
+  }
+  function proceedAiOnly(idx, variant) {
+    generatingRef.current.delete(idx);
+    generateImageForVariant(idx, {
+      ...variant,
+      headerImageProductTitles: null,
+      imageMode: null,
+    });
+  }
+
+  // RAW_PHOTO tab switcher — moves to the matched product's next real
+  // catalog photo. Re-calls the backend (passing the new index) rather
+  // than swapping the <img> src to the raw catalog URL directly: the raw
+  // photo may not be square, and the backend's padded/composited version
+  // is what actually gets submitted to Meta, so the preview has to show
+  // that exact version, not a stand-in. This path has no AI call, so the
+  // round trip is effectively instant either way.
+  function cyclePhotoTab(idx, variant) {
+    const cur = imageState[idx];
+    if (!cur?.availableProductImages?.length) return;
+    const nextIdx =
+      ((cur.selectedProductImageIndex ?? 0) + 1) %
+      cur.availableProductImages.length;
+    generatingRef.current.delete(idx);
+    generateImageForVariant(idx, variant, () => false, nextIdx);
+  }
+
   async function generateImageForVariant(
     idx,
     variant,
     isCancelled = () => false,
+    selectedProductImageIndex = 0,
   ) {
     // Mark as in-flight (deduplicate) and set loading state
     generatingRef.current.add(idx);
     setImageState((prev) => ({
       ...prev,
-      [idx]: { url: null, loading: true, error: null },
+      [idx]: { url: null, loading: true, error: null, stage: "generating" },
     }));
     try {
       const json = await previewCampaignImageApi({
@@ -146,16 +331,82 @@ function CampaignContentPicker({ data, onSaved }) {
         intent: data.intent || "golf campaign",
         context: variant.bodyText?.slice(0, 200) || "",
         headerImagePromptHint: variant.headerImagePromptHint || null,
+        headerImageEyebrow: variant.headerImageEyebrow || null,
+        headerImageHeadline: variant.headerImageHeadline || null,
+        headerImageBadgeText: variant.headerImageBadgeText || null,
+        headerImageProductTitles: variant.headerImageProductTitles || null,
+        // "AI_SCENE" (Flux backdrop + real photo composited) or
+        // "RAW_PHOTO" (real photo on a plain backdrop, no AI call at all)
+        // — the staff member's explicit choice, stamped onto the variant
+        // by suggest_campaign_content. null when there's no real product
+        // photo to choose a presentation for.
+        imageMode: variant.imageMode || null,
+        // RAW_PHOTO only: which of the matched product's real catalog
+        // photos to use, when it has more than one. See cyclePhotoTab.
+        selectedProductImageIndex,
       });
       if (!isCancelled()) {
         setImageState((prev) => ({
           ...prev,
-          [idx]: { url: json.imageUrl, loading: false, error: null },
+          [idx]: {
+            url: json.imageUrl,
+            // The plain backdrop (AI scene, or on the raw-photo path a flat
+            // brand-color panel) before products/text — kept so staff can
+            // edit the wording afterward without regenerating (see
+            // handleUpdateWording above).
+            backdropUrl: json.backdropUrl || null,
+            loading: false,
+            error: null,
+            unresolved: false,
+            imageMode: json.imageMode || null,
+            // Present only when headerImageProductTitles was sent — lets staff
+            // see at a glance whether their REAL catalog photos made it into
+            // the composited image, or whether one silently fell back to AI
+            // (e.g. archived between check_product_photo and now).
+            matchedProductTitles: json.matchedProductTitles || null,
+            unmatchedProductTitles: json.unmatchedProductTitles || null,
+            // RAW_PHOTO only, and only when the matched product has more
+            // than one real photo on file — drives the "Photo 1/3" tab
+            // switcher instead of the AI "Generate new image" button,
+            // which this path never shows (see cyclePhotoTab).
+            availableProductImages: json.availableProductImages || null,
+            selectedProductImageIndex: json.selectedProductImageIndex ?? 0,
+          },
         }));
+        // Reset any stale wording overrides from a previous image for this
+        // variant — the fresh generation already has the agent's latest
+        // eyebrow/headline/badge baked in as the starting point.
+        setWordingEdits((prev) => {
+          if (!prev[idx]) return prev;
+          const next = { ...prev };
+          delete next[idx];
+          return next;
+        });
       }
     } catch (err) {
       // Clear the ref on error so the user can retry via "Generate new image"
       generatingRef.current.delete(idx);
+      // PRODUCT_PHOTOS_UNRESOLVED (409) — the confirmed product's photo
+      // couldn't be found at generation time (e.g. archived since
+      // check_product_photo ran). This used to silently fall back to a
+      // fully AI-imagined product with no signal to staff at all; now the
+      // backend stops and tells us, so give staff an actual choice instead
+      // of a generic error string.
+      const data = err.response?.data;
+      if (data?.error === "PRODUCT_PHOTOS_UNRESOLVED") {
+        setImageState((prev) => ({
+          ...prev,
+          [idx]: {
+            url: null,
+            loading: false,
+            error: null,
+            unresolved: true,
+            unmatchedProductTitles: data.unmatchedProductTitles || null,
+            message: data.message,
+          },
+        }));
+        return;
+      }
       setImageState((prev) => ({
         ...prev,
         [idx]: { url: null, loading: false, error: err.message },
@@ -624,25 +875,15 @@ function CampaignContentPicker({ data, onSaved }) {
             TEMPLATE COMPONENTS
           </div>
 
-          {/* IMAGE header — full preview + regenerate */}
+          {/* IMAGE header — Path A (real catalog photo) or Path B (AI-generated scene) */}
           {selectedVariant.headerType === "IMAGE" &&
             (() => {
               const imgS = imageState[selectedIdx];
-              return (
-                <div style={{ marginBottom: 6 }}>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: "#52525b",
-                      marginBottom: 4,
-                    }}
-                  >
-                    Header: 🖼 AI golf scene
-                  </div>
 
-                  {/* Image preview */}
-                  {imgS?.loading && (
+              // ── Loading (either the catalog lookup or a Replicate call) ──
+              if (imgS?.loading) {
+                return (
+                  <div style={{ marginBottom: 6 }}>
                     <div
                       style={{
                         display: "flex",
@@ -665,9 +906,278 @@ function CampaignContentPicker({ data, onSaved }) {
                           flexShrink: 0,
                         }}
                       />
-                      Generating your golf scene… (~7 seconds)
+                      {imgS.stage === "generating"
+                        ? "Generating your campaign scene… (~7 seconds)"
+                        : "Checking the catalog for a matching product photo…"}
                     </div>
-                  )}
+                  </div>
+                );
+              }
+
+              // ── Ambiguous: several products matched the campaign name ──
+              if (imgS?.source === "catalog-ambiguous") {
+                return (
+                  <div style={{ marginBottom: 6 }}>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "#52525b",
+                        marginBottom: 6,
+                      }}
+                    >
+                      Header: which product did you mean?
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {imgS.candidates.map((p) => (
+                        <button
+                          key={p.id}
+                          onClick={() => pickProductCandidate(selectedIdx, p)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            border: "1px solid #ddd6fe",
+                            background: "#f5f3ff",
+                            borderRadius: 6,
+                            padding: "4px 8px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <img
+                            src={p.imageUrls[0]}
+                            alt={p.title}
+                            style={{
+                              width: 28,
+                              height: 28,
+                              objectFit: "cover",
+                              borderRadius: 4,
+                            }}
+                          />
+                          <span style={{ fontSize: 11, color: "#3f3f46" }}>
+                            {p.title}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() =>
+                        switchToGeneration(selectedIdx, selectedVariant)
+                      }
+                      style={{
+                        marginTop: 6,
+                        fontSize: 10.5,
+                        color: "#71717a",
+                        background: "none",
+                        border: "none",
+                        textDecoration: "underline",
+                        cursor: "pointer",
+                        padding: 0,
+                      }}
+                    >
+                      None of these — generate an image instead
+                    </button>
+                  </div>
+                );
+              }
+
+              // ── Real catalog photo (Path A) ──
+              if (imgS?.source === "catalog") {
+                return (
+                  <div style={{ marginBottom: 6 }}>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "#52525b",
+                        marginBottom: 4,
+                      }}
+                    >
+                      Header: 📦 real photo — {imgS.productTitle}
+                    </div>
+                    {imgS.url && (
+                      <div
+                        style={{
+                          borderRadius: 8,
+                          overflow: "hidden",
+                          border: "1px solid #bbf7d0",
+                          marginBottom: 6,
+                        }}
+                      >
+                        <img
+                          src={imgS.url}
+                          alt={`${imgS.productTitle} — catalog photo`}
+                          style={{
+                            width: "100%",
+                            display: "block",
+                            aspectRatio: "1/1",
+                            objectFit: "cover",
+                          }}
+                        />
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {imgS.images?.length > 1 && (
+                        <button
+                          onClick={() => cycleCatalogImage(selectedIdx)}
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            color: "#15803d",
+                            background: "#f0fdf4",
+                            border: "1px solid #bbf7d0",
+                            borderRadius: 5,
+                            padding: "4px 10px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          🔄 Try another photo ({imgS.imageIdx + 1}/
+                          {imgS.images.length})
+                        </button>
+                      )}
+                      <button
+                        onClick={() =>
+                          switchToGeneration(selectedIdx, selectedVariant)
+                        }
+                        style={{
+                          fontSize: 10.5,
+                          color: "#71717a",
+                          background: "none",
+                          border: "1px solid #e4e4e7",
+                          borderRadius: 5,
+                          padding: "4px 10px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        None of these — generate instead
+                      </button>
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 5,
+                        fontSize: 10,
+                        color: "#15803d",
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      ✦ This is the real product photo from your catalog — no AI
+                      generation involved. It will be submitted to Meta as-is.
+                    </div>
+                  </div>
+                );
+              }
+
+              // ── Staff chose RAW_PHOTO (STEP 2.6) — real product photo
+              //    as-is, no AI generation, no "Generate new image" button
+              //    (there's nothing for it to regenerate). When the matched
+              //    product has more than one real photo on file, show a
+              //    "Photo 1/3" switcher instead — that's the staff's actual
+              //    lever on this path. ──
+              if (imgS?.imageMode === "RAW_PHOTO") {
+                return (
+                  <div style={{ marginBottom: 6 }}>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "#52525b",
+                        marginBottom: 4,
+                      }}
+                    >
+                      Header: 📦 real product photo
+                      {imgS.matchedProductTitles?.length > 0 &&
+                        ` — ${imgS.matchedProductTitles.join(", ")}`}
+                    </div>
+                    {imgS.url && (
+                      <div
+                        style={{
+                          borderRadius: 8,
+                          overflow: "hidden",
+                          border: "1px solid #bbf7d0",
+                          marginBottom: 6,
+                        }}
+                      >
+                        <img
+                          src={imgS.url}
+                          alt="Real product photo preview"
+                          style={{
+                            width: "100%",
+                            display: "block",
+                            aspectRatio: "1/1",
+                            objectFit: "cover",
+                          }}
+                        />
+                      </div>
+                    )}
+                    {imgS?.error && (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "#dc2626",
+                          background: "#fef2f2",
+                          border: "1px solid #fecaca",
+                          borderRadius: 5,
+                          padding: "5px 8px",
+                          marginBottom: 5,
+                        }}
+                      >
+                        ⚠ {imgS.error}
+                      </div>
+                    )}
+                    {imgS.availableProductImages?.length > 1 && (
+                      <button
+                        onClick={() =>
+                          cyclePhotoTab(selectedIdx, selectedVariant)
+                        }
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: "#15803d",
+                          background: "#f0fdf4",
+                          border: "1px solid #bbf7d0",
+                          borderRadius: 5,
+                          padding: "4px 10px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        🔄 Try another photo (
+                        {(imgS.selectedProductImageIndex ?? 0) + 1}/
+                        {imgS.availableProductImages.length})
+                      </button>
+                    )}
+                    {imgS.url && (
+                      <div
+                        style={{
+                          marginTop: 5,
+                          fontSize: 10,
+                          color: "#15803d",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        ✦ This is your real product photo, unmodified — no AI
+                        generation, no text drawn on it. It will be submitted to
+                        Meta as shown here.
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              // ── AI-generated themed scene (Path B) — no catalog match,
+              //    or staff chose to generate instead ──
+              return (
+                <div style={{ marginBottom: 6 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: "#52525b",
+                      marginBottom: 4,
+                    }}
+                  >
+                    Header: 🖼 AI-generated scene
+                  </div>
+
                   {imgS?.url && (
                     <div
                       style={{
@@ -679,7 +1189,7 @@ function CampaignContentPicker({ data, onSaved }) {
                     >
                       <img
                         src={imgS.url}
-                        alt="AI-generated golf scene preview"
+                        alt="AI-generated campaign scene preview"
                         style={{
                           width: "100%",
                           display: "block",
@@ -704,28 +1214,26 @@ function CampaignContentPicker({ data, onSaved }) {
                       ⚠ {imgS.error}
                     </div>
                   )}
-                  {!imgS?.loading && (
-                    <button
-                      onClick={() =>
-                        generateImageForVariant(selectedIdx, selectedVariant)
-                      }
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: "#7c3aed",
-                        background: "#f5f3ff",
-                        border: "1px solid #ddd6fe",
-                        borderRadius: 5,
-                        padding: "4px 10px",
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 5,
-                      }}
-                    >
-                      🔄 {imgS?.url ? "Generate new image" : "Generate image"}
-                    </button>
-                  )}
+                  <button
+                    onClick={() =>
+                      generateImageForVariant(selectedIdx, selectedVariant)
+                    }
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: "#7c3aed",
+                      background: "#f5f3ff",
+                      border: "1px solid #ddd6fe",
+                      borderRadius: 5,
+                      padding: "4px 10px",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 5,
+                    }}
+                  >
+                    🔄 {imgS?.url ? "Generate new image" : "Generate image"}
+                  </button>
 
                   {imgS?.url && (
                     <div
@@ -738,8 +1246,234 @@ function CampaignContentPicker({ data, onSaved }) {
                     >
                       ✦ This exact image will be submitted to Meta. If you want
                       a different one, click "Generate new image" above.
+                      {selectedVariant?.headerImageHeadline && (
+                        <>
+                          {" "}
+                          Check that the wording "
+                          {selectedVariant.headerImageHeadline}" came out
+                          legible and correctly spelled — AI image generation
+                          can occasionally garble on-image text. Regenerate if
+                          it doesn't read cleanly.
+                        </>
+                      )}
                     </div>
                   )}
+
+                  {/* PRODUCT_PHOTOS_UNRESOLVED — the confirmed product photo
+                      couldn't be found at generation time. Give staff an
+                      explicit choice instead of silently swapping to an
+                      AI-imagined product with no signal at all. */}
+                  {imgS?.unresolved && (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        fontSize: 10.5,
+                        color: "#991b1b",
+                        background: "#fef2f2",
+                        border: "1px solid #fecaca",
+                        borderRadius: 5,
+                        padding: "6px 8px",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      ⚠{" "}
+                      {imgS.message ||
+                        "Couldn't find a usable photo for the confirmed product(s)."}
+                      {imgS.unmatchedProductTitles?.length > 0 && (
+                        <> ({imgS.unmatchedProductTitles.join(", ")})</>
+                      )}
+                      <div style={{ marginTop: 5, display: "flex", gap: 8 }}>
+                        <button
+                          onClick={() =>
+                            retryUnresolved(selectedIdx, selectedVariant)
+                          }
+                          style={{
+                            fontSize: 10,
+                            color: "#991b1b",
+                            background: "none",
+                            border: "1px solid #fecaca",
+                            borderRadius: 4,
+                            padding: "3px 7px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Try again
+                        </button>
+                        <button
+                          onClick={() =>
+                            proceedAiOnly(selectedIdx, selectedVariant)
+                          }
+                          style={{
+                            fontSize: 10,
+                            color: "#991b1b",
+                            background: "none",
+                            border: "1px solid #fecaca",
+                            borderRadius: 4,
+                            padding: "3px 7px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Generate AI scene instead
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Real-product-compositing status — only present when this
+                      variant named real catalog products (headerImageProductTitles).
+                      Lets staff see at a glance whether their actual photos made
+                      it into the image, not a generic AI stand-in. */}
+                  {imgS?.matchedProductTitles &&
+                    imgS.matchedProductTitles.length > 0 && (
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontSize: 10,
+                          color: "#15803d",
+                          background: "#f0fdf4",
+                          border: "1px solid #bbf7d0",
+                          borderRadius: 5,
+                          padding: "5px 8px",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        ✓ Using your real catalog photos for:{" "}
+                        {imgS.matchedProductTitles.join(", ")}
+                      </div>
+                    )}
+                  {imgS?.unmatchedProductTitles &&
+                    imgS.unmatchedProductTitles.length > 0 && (
+                      <div
+                        style={{
+                          marginTop: 4,
+                          fontSize: 10,
+                          color: "#b45309",
+                          background: "#fffbeb",
+                          border: "1px solid #fde68a",
+                          borderRadius: 5,
+                          padding: "5px 8px",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        ⚠ No photo found for:{" "}
+                        {imgS.unmatchedProductTitles.join(", ")} — that part of
+                        the image was left out rather than shown as a generic
+                        stand-in.
+                      </div>
+                    )}
+
+                  {/* Editable wording — only once a composite preview has
+                      returned a backdropUrl, so an edit can be re-drawn
+                      instantly over the existing AI scene instead of
+                      triggering a brand-new (slower, rate-limited) Flux
+                      generation. */}
+                  {imgS?.backdropUrl &&
+                    (() => {
+                      const wording = wordingFor(selectedIdx);
+                      const saving = !!wordingSaving[selectedIdx];
+                      const fieldStyle = {
+                        width: "100%",
+                        boxSizing: "border-box",
+                        fontSize: 11,
+                        padding: "5px 7px",
+                        border: "1px solid #e4e4e7",
+                        borderRadius: 5,
+                        marginBottom: 5,
+                        fontFamily: "inherit",
+                      };
+                      return (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            padding: 8,
+                            background: "#fafafa",
+                            border: "1px solid #e4e4e7",
+                            borderRadius: 6,
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 10.5,
+                              fontWeight: 600,
+                              color: "#52525b",
+                              marginBottom: 6,
+                            }}
+                          >
+                            Edit the wording on the image
+                          </div>
+                          <input
+                            type="text"
+                            placeholder="Eyebrow (small line above headline) — optional"
+                            value={wording.eyebrow}
+                            maxLength={28}
+                            onChange={(e) =>
+                              setWordingField(
+                                selectedIdx,
+                                "eyebrow",
+                                e.target.value,
+                              )
+                            }
+                            style={fieldStyle}
+                          />
+                          <input
+                            type="text"
+                            placeholder="Headline — e.g. Christmas Golf Combo"
+                            value={wording.headline}
+                            maxLength={40}
+                            onChange={(e) =>
+                              setWordingField(
+                                selectedIdx,
+                                "headline",
+                                e.target.value,
+                              )
+                            }
+                            style={fieldStyle}
+                          />
+                          <input
+                            type="text"
+                            placeholder="Badge tag (short) — e.g. Festive Offer — optional"
+                            value={wording.badgeText}
+                            maxLength={16}
+                            onChange={(e) =>
+                              setWordingField(
+                                selectedIdx,
+                                "badgeText",
+                                e.target.value,
+                              )
+                            }
+                            style={{ ...fieldStyle, marginBottom: 7 }}
+                          />
+                          <button
+                            onClick={() => handleUpdateWording(selectedIdx)}
+                            disabled={saving}
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "#fff",
+                              background: saving ? "#a1a1aa" : "#15803d",
+                              border: "none",
+                              borderRadius: 5,
+                              padding: "5px 10px",
+                              cursor: saving ? "default" : "pointer",
+                            }}
+                          >
+                            {saving ? "Updating…" : "Update wording"}
+                          </button>
+                          <div
+                            style={{
+                              marginTop: 5,
+                              fontSize: 9.5,
+                              color: "#71717a",
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            This only redraws the text — the photo itself stays
+                            the same, so it's instant and doesn't use up another
+                            image generation.
+                          </div>
+                        </div>
+                      );
+                    })()}
                 </div>
               );
             })()}
@@ -817,9 +1551,11 @@ function CampaignContentPicker({ data, onSaved }) {
         >
           You'll confirm and submit to Meta on the Campaigns page.
           {selectedVariant.headerType === "IMAGE" &&
-            (imageState[selectedIdx]?.url
-              ? " The previewed image will be submitted to Meta."
-              : " An AI golf scene will be generated at submit time.")}
+            (imageState[selectedIdx]?.source === "catalog"
+              ? " The real product photo will be submitted to Meta."
+              : imageState[selectedIdx]?.url
+                ? " The previewed image will be submitted to Meta."
+                : " An AI scene will be generated at submit time.")}
         </div>
       </div>
     </div>
