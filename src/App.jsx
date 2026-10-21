@@ -12,6 +12,7 @@ import Orders from "./pages/Orders";
 import Customers from "./pages/Customers";
 import Products from "./pages/Products";
 import Suppliers from "./pages/Suppliers";
+import ProductImports from "./pages/ProductImports";
 import AuditLog from "./pages/AuditLog";
 // import Campaigns from "./pages/Campaigns";
 import AgentUsage from "./pages/AgentUsage";
@@ -95,6 +96,7 @@ export default function App() {
           <Route path="/orders" element={<Orders />} />
           <Route path="/customers" element={<Customers />} />
           <Route path="/suppliers" element={<Suppliers />} />
+          <Route path="/product-imports" element={<ProductImports />} />
           <Route path="/campaigns" element={<Campaigns />} />
           <Route path="/broadcast-campaigns" element={<BroadcastCampaigns />} />
           {/* <Route path="/insights" element={<Placeholder name="Insights" />} /> */}

@@ -14,6 +14,7 @@ import {
   SparkIcon,
   SettingsIcon,
   CloseIcon,
+  InboxDownloadIcon,
 } from "./icons";
 
 // Chevron icon — inline so we don't need to import a new one
@@ -54,6 +55,7 @@ const NAV_ITEMS = [
   { to: "/orders", label: "Orders", icon: ReceiptIcon },
   { to: "/customers", label: "Customers", icon: UsersIcon },
   { to: "/suppliers", label: "Suppliers", icon: TruckIcon },
+  { to: "/product-imports", label: "Product Imports", icon: InboxDownloadIcon },
   {
     label: "Campaigns",
     icon: MegaphoneIcon,
