@@ -371,3 +371,29 @@ export function ClipboardListIcon({ className = "h-[18px] w-[18px]" }) {
     </svg>
   );
 }
+
+export function InboxDownloadIcon({ className = "h-[18px] w-[18px]" }) {
+  return (
+    <svg {...base(className)}>
+      <path
+        d="M4.5 13.5 6 6.3a1.5 1.5 0 0 1 1.47-1.2h9.06A1.5 1.5 0 0 1 18 6.3l1.5 7.2"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4.5 13.5h4.2a1 1 0 0 1 .95.68l.3.9a1 1 0 0 0 .95.67h2.2a1 1 0 0 0 .95-.67l.3-.9a1 1 0 0 1 .95-.68h4.2v4a1.5 1.5 0 0 1-1.5 1.5h-12a1.5 1.5 0 0 1-1.5-1.5v-4Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M12 4.5v5M9.8 7.3 12 9.5l2.2-2.2"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
