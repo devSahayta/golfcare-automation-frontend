@@ -67,7 +67,7 @@ function CampaignContentPicker({ data, onSaved }) {
   // Seed priority (highest → lowest):
   //   1. headerImageUrl already saved on the variant (backend returned a saved draft URL)
   //   2. sessionStorage cache from a previous generation this browser session
-  //   3. Empty — will trigger a fresh Replicate call
+  //   3. Empty — will trigger a fresh AI generation call
   const [imageState, setImageState] = useState(() => {
     // Start from backend-saved URLs
     const initial = {};
@@ -107,8 +107,21 @@ function CampaignContentPicker({ data, onSaved }) {
   }, [imageState, imageCacheKey]);
 
   // Tracks which variant indices have had a generation started — prevents React strict-mode
-  // double-fire and any other re-render from firing a second Replicate request
+  // double-fire and any other re-render from firing a second AI generation request
   const generatingRef = useRef(new Set());
+
+  // True only when the component has genuinely unmounted (user navigated away),
+  // NOT during React StrictMode's synthetic mount→cleanup→remount cycle.
+  // Used to gate setImageState calls so we don't update a dead component, but
+  // critically NOT set during the StrictMode cleanup so the in-flight request
+  // from the first mount can still write its result when it resolves.
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+    };
+  }, []);
 
   // Staff-editable overrides for the on-image eyebrow/headline/badge text,
   // keyed by variant index. Starts undefined (falls back to the agent's own
@@ -135,7 +148,7 @@ function CampaignContentPicker({ data, onSaved }) {
   }
 
   // Re-draws the text layer over the already-generated backdrop — no new
-  // Flux call, near-instant. Only available once a composite preview has
+  // AI call, near-instant. Only available once a composite preview has
   // returned a backdropUrl (the real-product-photo path); the plain
   // AI-scene path doesn't have a backdrop separate from its final image.
   async function handleUpdateWording(idx) {
@@ -170,7 +183,7 @@ function CampaignContentPicker({ data, onSaved }) {
   // Auto-generate image when an IMAGE variant is first selected.
   // React strict-mode double-invokes effects: mount → cleanup → mount again.
   // We use a module-level flag (not a ref) per component instance so the
-  // second mount sees it already set and skips the duplicate Replicate call.
+  // second mount sees it already set and skips the duplicate AI generation call.
   useEffect(() => {
     const variant = data.variants[selectedIdx];
     if (!variant || variant.headerType !== "IMAGE") return;
@@ -182,16 +195,20 @@ function CampaignContentPicker({ data, onSaved }) {
     if (generatingRef.current.has(selectedIdx)) return;
     generatingRef.current.add(selectedIdx);
 
-    let cancelled = false;
-    resolveImageForVariant(selectedIdx, variant, () => cancelled);
+    // Use unmountedRef (set only on genuine unmount, NOT during StrictMode's
+    // synthetic cleanup) so the in-flight request can still write its result
+    // after StrictMode's mount→cleanup→remount cycle. A closure `cancelled`
+    // flag was here before but it was set in the cleanup, which StrictMode
+    // fires between the first and second mount — so the real fetch from the
+    // first mount would resolve 20+ seconds later, check isCancelled()=true,
+    // and silently discard the URL. generatingRef blocks the second mount from
+    // firing a duplicate request, so the result from the first mount is the
+    // only one that ever comes back — it must be allowed to write to state.
+    resolveImageForVariant(selectedIdx, variant, () => unmountedRef.current);
 
-    return () => {
-      // On strict-mode cleanup, remove so the real second mount can proceed.
-      // But only if no image loaded yet — don't cancel a completed generation.
-      if (!imageState[selectedIdx]?.url) {
-        generatingRef.current.delete(selectedIdx);
-      }
-    };
+    // No cleanup needed: generatingRef already blocks duplicate calls,
+    // unmountedRef handles genuine unmount, and both refs belong to this
+    // component instance and are discarded with it on a real unmount.
   }, [selectedIdx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Path A(composite) / Path B gate for a variant's IMAGE header.
@@ -296,6 +313,18 @@ function CampaignContentPicker({ data, onSaved }) {
     });
   }
 
+  // AI_BRAND_LOGO_BLOCKED recovery — AI provider's IP-protection filter
+  // rejected the request because it combines a real product's photo with an
+  // instruction to keep its logo exact (see imageGenerationService.js and
+  // broadcastCampaignController.js for where this is detected). This is not
+  // a transient failure — retrying AI_SCENE again with the same reference
+  // photo will fail again — so the only real fix is switching this variant
+  // to RAW_PHOTO, which uses the same real photo with no AI call at all.
+  function switchToRawPhoto(idx, variant) {
+    generatingRef.current.delete(idx);
+    generateImageForVariant(idx, { ...variant, imageMode: "RAW_PHOTO" });
+  }
+
   // RAW_PHOTO tab switcher — moves to the matched product's next real
   // catalog photo. Re-calls the backend (passing the new index) rather
   // than swapping the <img> src to the raw catalog URL directly: the raw
@@ -335,7 +364,7 @@ function CampaignContentPicker({ data, onSaved }) {
         headerImageHeadline: variant.headerImageHeadline || null,
         headerImageBadgeText: variant.headerImageBadgeText || null,
         headerImageProductTitles: variant.headerImageProductTitles || null,
-        // "AI_SCENE" (Flux backdrop + real photo composited) or
+        // "AI_SCENE" (AI-generated scene with real photo as reference) or
         // "RAW_PHOTO" (real photo on a plain backdrop, no AI call at all)
         // — the staff member's explicit choice, stamped onto the variant
         // by suggest_campaign_content. null when there's no real product
@@ -407,6 +436,24 @@ function CampaignContentPicker({ data, onSaved }) {
         }));
         return;
       }
+      // AI_BRAND_LOGO_BLOCKED (409) — AI provider's brand/logo IP-protection
+      // filter rejected the request. Not retryable as AI_SCENE (same reference
+      // photo would get flagged again) — only real fix is RAW_PHOTO, so
+      // surface that as the explicit action instead of a dead-end error.
+      if (data?.error === "AI_BRAND_LOGO_BLOCKED") {
+        setImageState((prev) => ({
+          ...prev,
+          [idx]: {
+            url: null,
+            loading: false,
+            error: null,
+            brandBlocked: true,
+            brandBlockedProductNames: data.productNames || null,
+            message: data.message,
+          },
+        }));
+        return;
+      }
       setImageState((prev) => ({
         ...prev,
         [idx]: { url: null, loading: false, error: err.message },
@@ -472,6 +519,7 @@ function CampaignContentPicker({ data, onSaved }) {
       }
 
       onSaved({
+        id: campaignId,
         campaignId,
         name: res.data.campaignName,
         audienceSize: res.data.audienceSize,
@@ -479,7 +527,11 @@ function CampaignContentPicker({ data, onSaved }) {
       });
     } catch (err) {
       console.error("saveCampaignDraft failed:", err);
-      setError("Failed to save draft. Try again.");
+      // Surface the actual server error message so staff knows what's wrong
+      // (e.g. "bodyText is too long (max 1024 chars)" instead of a blank "try again")
+      const serverMsg =
+        err.response?.data?.error || err.response?.data?.message || null;
+      setError(serverMsg || "Failed to save draft. Try again.");
     } finally {
       setIsSaving(false);
     }
@@ -623,7 +675,7 @@ function CampaignContentPicker({ data, onSaved }) {
                               animation: "spin 0.7s linear infinite",
                             }}
                           />
-                          <span>Generating AI golf scene…</span>
+                          <span>Generating image — ~30 sec…</span>
                         </div>
                       );
                     }
@@ -880,7 +932,7 @@ function CampaignContentPicker({ data, onSaved }) {
             (() => {
               const imgS = imageState[selectedIdx];
 
-              // ── Loading (either the catalog lookup or a Replicate call) ──
+              // ── Loading (either the catalog lookup or an AI generation call) ──
               if (imgS?.loading) {
                 return (
                   <div style={{ marginBottom: 6 }}>
@@ -907,7 +959,7 @@ function CampaignContentPicker({ data, onSaved }) {
                         }}
                       />
                       {imgS.stage === "generating"
-                        ? "Generating your campaign scene… (~7 seconds)"
+                        ? "Generating your campaign image — please wait, this takes about 30 seconds…"
                         : "Checking the catalog for a matching product photo…"}
                     </div>
                   </div>
@@ -1163,8 +1215,13 @@ function CampaignContentPicker({ data, onSaved }) {
                 );
               }
 
-              // ── AI-generated themed scene (Path B) — no catalog match,
-              //    or staff chose to generate instead ──
+              // ── AI-generated image (imageMode AI_SCENE) — one AI generation
+              //    call produces the whole creative: scene, wording,
+              //    and (when a real catalog photo was confirmed) the
+              //    product itself, using that photo as a reference rather
+              //    than a flat paste. Same preview UI whether or not a real
+              //    product was involved — the caption below adds a
+              //    product-fidelity note only when one was. ──
               return (
                 <div style={{ marginBottom: 6 }}>
                   <div
@@ -1175,7 +1232,7 @@ function CampaignContentPicker({ data, onSaved }) {
                       marginBottom: 4,
                     }}
                   >
-                    Header: 🖼 AI-generated scene
+                    Header: 🖼 AI-generated image
                   </div>
 
                   {imgS?.url && (
@@ -1256,6 +1313,19 @@ function CampaignContentPicker({ data, onSaved }) {
                           it doesn't read cleanly.
                         </>
                       )}
+                      {imgS?.matchedProductTitles?.length > 0 && (
+                        <>
+                          {" "}
+                          Also double-check the{" "}
+                          {imgS.matchedProductTitles.join(", ")} came out
+                          looking like your real product — logo, color, and
+                          packaging. The AI uses your real photo as a reference
+                          but redraws the product, so it's not guaranteed
+                          pixel-exact. Regenerate if anything looks off, or
+                          switch this variant to the real-photo-only option for
+                          guaranteed-exact branding.
+                        </>
+                      )}
                     </div>
                   )}
 
@@ -1319,6 +1389,53 @@ function CampaignContentPicker({ data, onSaved }) {
                     </div>
                   )}
 
+                  {/* AI_BRAND_LOGO_BLOCKED — AI provider's brand/logo
+                      IP-protection filter rejected this request. Not a
+                      transient error: retrying AI_SCENE with the same real
+                      photo will fail again, so the only actionable fix is
+                      switching to RAW_PHOTO (same real photo, no AI call,
+                      never hits this filter). Say that plainly rather than
+                      showing a dead-end error with no way forward. */}
+                  {imgS?.brandBlocked && (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        fontSize: 10.5,
+                        color: "#991b1b",
+                        background: "#fef2f2",
+                        border: "1px solid #fecaca",
+                        borderRadius: 5,
+                        padding: "6px 8px",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      ⚠{" "}
+                      {imgS.message ||
+                        "AI generation was blocked by the provider's brand/logo protection filter."}
+                      {imgS.brandBlockedProductNames?.length > 0 && (
+                        <> ({imgS.brandBlockedProductNames.join(", ")})</>
+                      )}
+                      <div style={{ marginTop: 5, display: "flex", gap: 8 }}>
+                        <button
+                          onClick={() =>
+                            switchToRawPhoto(selectedIdx, selectedVariant)
+                          }
+                          style={{
+                            fontSize: 10,
+                            color: "#991b1b",
+                            background: "none",
+                            border: "1px solid #fecaca",
+                            borderRadius: 4,
+                            padding: "3px 7px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Use real photo instead (no AI)
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Real-product-compositing status — only present when this
                       variant named real catalog products (headerImageProductTitles).
                       Lets staff see at a glance whether their actual photos made
@@ -1365,8 +1482,7 @@ function CampaignContentPicker({ data, onSaved }) {
                   {/* Editable wording — only once a composite preview has
                       returned a backdropUrl, so an edit can be re-drawn
                       instantly over the existing AI scene instead of
-                      triggering a brand-new (slower, rate-limited) Flux
-                      generation. */}
+                      triggering a brand-new (slower) AI generation call. */}
                   {imgS?.backdropUrl &&
                     (() => {
                       const wording = wordingFor(selectedIdx);
