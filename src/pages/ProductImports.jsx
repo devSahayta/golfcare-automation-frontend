@@ -48,6 +48,8 @@ const ITEM_STATUS = {
   LINKED_EXISTING: { label: "Already in catalog", variant: "positive" },
   FAILED: { label: "Failed", variant: "danger" },
   NEEDS_RATE: { label: "Needs margin/GST", variant: "warning" },
+  NEEDS_BRAND_REVIEW: { label: "Brand not approved", variant: "warning" },
+  ALREADY_DRAFTED: { label: "Already drafted", variant: "positive" },
 };
 
 function StatusBadge({ map, status }) {
@@ -518,8 +520,12 @@ function BatchDrawer({ batchId, onClose }) {
                       {[item.brand, item.category].filter(Boolean).join(" · ") || "—"}
                       {item.variantCount > 1 ? ` · ${item.variantCount} variants` : ""}
                     </p>
-                    {item.status === "FAILED" && item.errorMessage && (
-                      <p className="mt-0.5 truncate text-xs text-red-500">{item.errorMessage}</p>
+                    {["FAILED", "NEEDS_RATE", "NEEDS_BRAND_REVIEW"].includes(item.status) && item.errorMessage && (
+                      <p
+                        className={`mt-0.5 truncate text-xs ${item.status === "FAILED" ? "text-red-500" : "text-gold-600"}`}
+                      >
+                        {item.errorMessage}
+                      </p>
                     )}
                   </div>
                   <StatusBadge map={ITEM_STATUS} status={item.status} />
@@ -599,7 +605,7 @@ export default function ProductImports() {
         subtitle="New products from suppliers — one at a time or a whole catalog — waiting for your approval before they go live on Shopify."
       />
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
         <StatCard
           label="Awaiting approval"
           value={s?.pendingDrafts}
@@ -613,6 +619,12 @@ export default function ProductImports() {
           value={s?.totalNeedsRate}
           loading={!s && !summary.error}
           hint={s?.totalNeedsRate ? "Ask the supplier" : undefined}
+        />
+        <StatCard
+          label="Needs brand review"
+          value={s?.totalNeedsBrandReview}
+          loading={!s && !summary.error}
+          hint={s?.totalNeedsBrandReview ? "Confirm supplier's brands" : undefined}
         />
         <StatCard
           label="AI cost, all time"
