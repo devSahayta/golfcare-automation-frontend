@@ -438,104 +438,107 @@ function Banner({
   return null;
 }
 
-// ─── WhatsApp mock preview ────────────────────────────────────────────────────
-function WAMockup({ header, body, footer, buttons, createdAt }) {
+// ─── WhatsApp chat preview (flat bubble, no phone frame) ──────────────────────
+function WAPreview({ header, body, footer, buttons, createdAt }) {
   const hasButtons = buttons?.filter((b) => b.text?.trim()).length > 0;
 
   return (
-    <div className="flex flex-col items-center">
-      {/* Phone frame */}
-      <div
-        className="relative w-full max-w-[260px] overflow-hidden rounded-3xl border-[6px] border-slate-800 bg-slate-800 shadow-2xl"
-        style={{ aspectRatio: "9/18" }}
-      >
-        {/* Status bar */}
-        <div className="flex h-7 items-center justify-between bg-[#075E54] px-3">
-          <div className="flex items-center gap-1.5">
-            <div className="h-3 w-3 rounded-full bg-white/20" />
-            <span className="text-[9px] font-semibold text-white/70">
-              Golf Care
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="h-1 w-1 rounded-full bg-green-400" />
-            <span className="text-[8px] text-white/60">online</span>
-          </div>
+    <div className="flex flex-col h-full">
+      {/* WA top bar */}
+      <div className="flex items-center gap-2.5 rounded-t-xl bg-[#075E54] px-4 py-2.5">
+        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20 text-[10px] font-bold text-white">
+          GC
         </div>
-
-        {/* Chat area */}
-        <div className="flex h-full flex-col bg-[#eae6df] px-2 pt-2 pb-12">
-          {/* Message bubble */}
-          <div className="self-start w-[92%]">
-            <div className="overflow-hidden rounded-2xl rounded-tl-none bg-white shadow-sm">
-              {/* Header */}
-              {header?.type === "TEXT" && header.text?.trim() && (
-                <div className="border-b border-slate-100 px-3 pt-2.5 pb-1.5">
-                  <p className="text-[11px] font-bold leading-tight text-slate-900">
-                    {header.text}
-                  </p>
-                </div>
-              )}
-              {header?.type === "IMAGE" && (
-                <div className="flex h-24 items-center justify-center bg-slate-100">
-                  {header.imageUrl ? (
-                    <img
-                      src={header.imageUrl}
-                      alt="Header"
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center gap-1 text-slate-400">
-                      <Icon.Image className="h-6 w-6" />
-                      <span className="text-[9px]">Image header</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Body */}
-              <div className="px-3 py-2.5">
-                <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-slate-800">
-                  {body || (
-                    <span className="italic text-slate-400">Message body…</span>
-                  )}
-                </p>
-                {/* Footer */}
-                {footer?.text?.trim() && (
-                  <p className="mt-1.5 text-[9.5px] text-slate-400">
-                    {footer.text}
-                  </p>
-                )}
-                <p className="mt-1 text-right text-[8px] text-slate-400">
-                  {fmtShort(createdAt || new Date())}
-                </p>
-              </div>
-
-              {/* Buttons */}
-              {hasButtons && (
-                <div className="divide-y divide-slate-100 border-t border-slate-100">
-                  {buttons
-                    .filter((b) => b.text?.trim())
-                    .map((b, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center justify-center px-3 py-2"
-                      >
-                        <span className="text-[10px] font-semibold text-[#128C7E]">
-                          {b.text}
-                        </span>
-                      </div>
-                    ))}
-                </div>
-              )}
-            </div>
-          </div>
+        <div>
+          <p className="text-xs font-semibold text-white leading-none">
+            Golf Care
+          </p>
+          <p className="text-[10px] text-white/60 mt-0.5">online</p>
         </div>
-
-        {/* Home bar */}
-        <div className="absolute bottom-2 left-1/2 h-1 w-20 -translate-x-1/2 rounded-full bg-white/30" />
       </div>
-      <p className="mt-2 text-xs text-slate-400">Live preview</p>
+
+      {/* Chat area */}
+      <div
+        className="flex-1 overflow-y-auto px-4 py-4"
+        style={{
+          background: "linear-gradient(180deg,#dfe7dc 0%,#d5dbcf 100%)",
+        }}
+      >
+        {/* Bubble */}
+        <div className="max-w-[88%] overflow-hidden rounded-2xl rounded-tl-none bg-white shadow-md">
+          {/* Image header */}
+          {header?.type === "IMAGE" &&
+            (header.imageUrl ? (
+              <img
+                src={header.imageUrl}
+                alt="Header"
+                className="w-full h-auto block"
+                onError={(e) => {
+                  e.target.style.display = "none";
+                }}
+              />
+            ) : (
+              <div className="flex h-28 flex-col items-center justify-center gap-1.5 bg-slate-100 text-slate-400">
+                <Icon.Image className="h-7 w-7" />
+                <span className="text-xs">Image will appear here</span>
+              </div>
+            ))}
+
+          {/* Text header */}
+          {header?.type === "TEXT" && header.text?.trim() && (
+            <div className="border-b border-slate-100 px-3.5 pt-3 pb-2">
+              <p className="text-sm font-bold leading-snug text-slate-900">
+                {header.text}
+              </p>
+            </div>
+          )}
+
+          {/* Body */}
+          <div
+            className={`px-3.5 pb-1 ${header?.type === "NONE" || (!header?.text?.trim() && header?.type !== "IMAGE") ? "pt-3" : "pt-2.5"}`}
+          >
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
+              {body || (
+                <span className="italic text-slate-400">
+                  Message body will appear here…
+                </span>
+              )}
+            </p>
+          </div>
+
+          {/* Footer + timestamp */}
+          <div className="flex items-end justify-between px-3.5 pt-1 pb-2.5">
+            {footer?.text?.trim() ? (
+              <p className="text-[11px] leading-tight text-slate-400">
+                {footer.text}
+              </p>
+            ) : (
+              <span />
+            )}
+            <p className="ml-3 shrink-0 text-[10px] text-slate-400">
+              {fmtShort(createdAt || new Date())} ✓✓
+            </p>
+          </div>
+
+          {/* Buttons */}
+          {hasButtons && (
+            <div className="divide-y divide-slate-100 border-t border-slate-100">
+              {buttons
+                .filter((b) => b.text?.trim())
+                .map((b, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-center py-2.5"
+                  >
+                    <span className="text-xs font-semibold text-[#128C7E]">
+                      {b.text}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -614,29 +617,31 @@ function TemplateEditor({ campaign, onSaved }) {
 
   return (
     <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
-      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
+      {/* Card header */}
+      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
         <div className="flex items-center gap-2">
           <Icon.Edit className="h-4 w-4 text-slate-400" />
-          <span className="text-xs font-semibold text-slate-600">
+          <span className="text-sm font-semibold text-slate-700">
             Edit Template
           </span>
         </div>
-        <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-semibold text-slate-500">
-          Draft only
+        <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-600 border border-amber-200">
+          Draft — not yet submitted
         </span>
       </div>
 
-      <div className="flex flex-col gap-0 lg:flex-row">
-        {/* Left: editor */}
-        <div className="flex-1 border-b border-slate-100 lg:border-b-0 lg:border-r">
-          <div className="flex border-b border-slate-100">
+      <div className="flex flex-col lg:flex-row">
+        {/* ── Left: editor ── */}
+        <div className="flex flex-col flex-1 min-w-0 border-b border-slate-100 lg:border-b-0 lg:border-r lg:border-slate-100">
+          {/* Section tabs */}
+          <div className="flex border-b border-slate-100 bg-slate-50/60">
             {TABS.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`px-4 py-2.5 text-xs font-semibold transition-colors ${
+                className={`px-5 py-3 text-xs font-semibold transition-colors ${
                   tab === t.id
-                    ? "border-b-2 border-green-600 text-green-700"
+                    ? "border-b-2 border-green-600 bg-white text-green-700"
                     : "text-slate-400 hover:text-slate-600"
                 }`}
               >
@@ -645,45 +650,45 @@ function TemplateEditor({ campaign, onSaved }) {
             ))}
           </div>
 
-          <div className="p-4">
-            {/* BODY TAB */}
+          <div className="flex-1 p-5 space-y-4">
+            {/* BODY */}
             {tab === "body" && (
               <div>
-                <label className="mb-1.5 block text-xs font-semibold text-slate-500">
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
                   Message Body
                 </label>
                 <textarea
                   value={body}
                   onChange={(e) => setBody(e.target.value)}
-                  rows={5}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm leading-relaxed text-slate-800 focus:outline-none focus:ring-1 focus:ring-green-500 ${
+                  rows={8}
+                  className={`w-full rounded-lg border px-3.5 py-3 text-sm leading-relaxed text-slate-800 focus:outline-none focus:ring-2 focus:ring-green-500/30 focus:border-green-500 resize-none ${
                     bodyOver
                       ? "border-red-300 bg-red-50"
-                      : "border-slate-200 bg-slate-50"
+                      : "border-slate-200 bg-white"
                   }`}
                   placeholder="Hi {{1}}, ..."
                 />
-                <div className="mt-1.5 flex items-center justify-between">
+                <div className="mt-2 flex items-center justify-between">
                   <p className="text-xs text-slate-400">
                     Must start with{" "}
-                    <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px]">
-                      Hi {"{{1}}"},"
+                    <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">
+                      Hi {"{{1}}"},
                     </code>
                   </p>
                   <span
-                    className={`text-xs font-medium ${bodyOver ? "text-red-500" : bodyCount > 900 ? "text-amber-500" : "text-slate-400"}`}
+                    className={`text-xs font-semibold tabular-nums ${bodyOver ? "text-red-500" : bodyCount > 900 ? "text-amber-500" : "text-slate-400"}`}
                   >
-                    {bodyCount}/1024
+                    {bodyCount} / 1024
                   </span>
                 </div>
               </div>
             )}
 
-            {/* HEADER TAB */}
+            {/* HEADER */}
             {tab === "header" && (
               <div className="space-y-4">
                 <div>
-                  <label className="mb-1.5 block text-xs font-semibold text-slate-500">
+                  <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-400">
                     Header Type
                   </label>
                   <div className="flex gap-2">
@@ -691,9 +696,9 @@ function TemplateEditor({ campaign, onSaved }) {
                       <button
                         key={t}
                         onClick={() => setHeader((h) => ({ ...h, type: t }))}
-                        className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        className={`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${
                           header.type === t
-                            ? "bg-green-700 text-white"
+                            ? "bg-green-700 text-white shadow-sm"
                             : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                         }`}
                       >
@@ -709,7 +714,7 @@ function TemplateEditor({ campaign, onSaved }) {
 
                 {header.type === "TEXT" && (
                   <div>
-                    <label className="mb-1.5 block text-xs font-semibold text-slate-500">
+                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
                       Header Text
                     </label>
                     <input
@@ -719,18 +724,18 @@ function TemplateEditor({ campaign, onSaved }) {
                         setHeader((h) => ({ ...h, text: e.target.value }))
                       }
                       maxLength={60}
-                      placeholder="e.g. Golf Care Members"
-                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                      placeholder="e.g. New Arrivals at Golf Care"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30"
                     />
-                    <p className="mt-1 text-xs text-slate-400">
-                      Max 60 characters. No variables allowed.
+                    <p className="mt-1.5 text-xs text-slate-400">
+                      Max 60 characters · No variables
                     </p>
                   </div>
                 )}
 
                 {header.type === "IMAGE" && (
                   <div>
-                    <label className="mb-1.5 block text-xs font-semibold text-slate-500">
+                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
                       Image URL
                     </label>
                     <input
@@ -740,33 +745,32 @@ function TemplateEditor({ campaign, onSaved }) {
                         setHeader((h) => ({ ...h, imageUrl: e.target.value }))
                       }
                       placeholder="https://..."
-                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30"
                     />
-                    <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 space-y-1">
-                      <p className="font-semibold text-slate-600">
-                        Image requirements (Meta)
+                    <div className="mt-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-xs text-slate-500 space-y-1">
+                      <p className="font-semibold text-slate-600 mb-1">
+                        Meta image requirements
                       </p>
-                      <p>· Ratio: 800×418 px (16:9)</p>
-                      <p>· Max size: 5 MB</p>
+                      <p>· Dimensions: 800 × 418 px (16:9)</p>
+                      <p>· Max file size: 5 MB</p>
                       <p>· Formats: JPG, PNG</p>
-                      <p>· Text must cover less than 20% of image</p>
+                      <p>· Text overlay: less than 20% of image</p>
                     </div>
                   </div>
                 )}
 
                 {header.type === "NONE" && (
-                  <p className="text-sm text-slate-400 italic">
-                    No header will be shown. The message starts directly with
-                    the body.
+                  <p className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 text-sm italic text-slate-400">
+                    No header — message starts directly with the body.
                   </p>
                 )}
               </div>
             )}
 
-            {/* FOOTER TAB */}
+            {/* FOOTER */}
             {tab === "footer" && (
               <div>
-                <label className="mb-1.5 block text-xs font-semibold text-slate-500">
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
                   Footer Text
                 </label>
                 <input
@@ -774,27 +778,27 @@ function TemplateEditor({ campaign, onSaved }) {
                   value={footer.text}
                   onChange={(e) => setFooter({ text: e.target.value })}
                   maxLength={60}
-                  placeholder="e.g. Reply STOP to unsubscribe"
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                  placeholder="e.g. Reply STOP to opt out"
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30"
                 />
                 <p className="mt-1.5 text-xs text-slate-400">
-                  Footer appears in smaller, muted text below the body. Optional
-                  but recommended for opt-out instructions.
+                  Shown in small muted text below the body. Recommended for
+                  opt-out instructions.
                 </p>
               </div>
             )}
 
-            {/* BUTTONS TAB */}
+            {/* BUTTONS */}
             {tab === "buttons" && (
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-slate-500">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                     Reply Buttons
                   </label>
                   <button
                     onClick={addButton}
                     disabled={buttons.length >= 3}
-                    className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 transition-colors"
                   >
                     <Icon.Plus className="h-3 w-3" />
                     Add button
@@ -802,14 +806,14 @@ function TemplateEditor({ campaign, onSaved }) {
                 </div>
 
                 {buttons.length === 0 && (
-                  <p className="text-sm text-slate-400 italic">
+                  <p className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 text-sm italic text-slate-400">
                     No buttons. Add up to 3 quick-reply buttons.
                   </p>
                 )}
 
-                {buttons.map((btn, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <div className="flex-1">
+                <div className="space-y-2">
+                  {buttons.map((btn, i) => (
+                    <div key={i} className="flex items-center gap-2">
                       <input
                         type="text"
                         value={btn.text}
@@ -818,75 +822,81 @@ function TemplateEditor({ campaign, onSaved }) {
                         }
                         maxLength={25}
                         placeholder={`Button ${i + 1} label`}
-                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                        className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30"
                       />
+                      <select
+                        value={btn.type}
+                        onChange={(e) =>
+                          updateButton(i, "type", e.target.value)
+                        }
+                        className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs text-slate-600 focus:border-green-500 focus:outline-none"
+                      >
+                        <option value="QUICK_REPLY">Quick Reply</option>
+                        <option value="PHONE_NUMBER">Call</option>
+                        <option value="URL">URL</option>
+                      </select>
+                      <button
+                        onClick={() => removeButton(i)}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-300 hover:bg-red-50 hover:text-red-500 transition-colors"
+                      >
+                        <Icon.Trash className="h-4 w-4" />
+                      </button>
                     </div>
-                    <select
-                      value={btn.type}
-                      onChange={(e) => updateButton(i, "type", e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-xs text-slate-600 focus:border-green-500 focus:outline-none"
-                    >
-                      <option value="QUICK_REPLY">Quick Reply</option>
-                      <option value="PHONE_NUMBER">Call</option>
-                      <option value="URL">URL</option>
-                    </select>
-                    <button
-                      onClick={() => removeButton(i)}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500"
-                    >
-                      <Icon.Trash className="h-4 w-4" />
-                    </button>
-                  </div>
-                ))}
-
+                  ))}
+                </div>
                 <p className="text-xs text-slate-400">
-                  Quick Reply buttons let customers respond with one tap. Max 3
-                  buttons, 25 chars each.
+                  Max 3 buttons · 25 characters each
                 </p>
               </div>
             )}
+          </div>
 
-            {/* Save error */}
+          {/* Save bar — pinned to bottom of editor */}
+          <div className="border-t border-slate-100 bg-slate-50/60 px-5 py-3.5 flex items-center gap-3">
             {saveError && (
-              <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                <Icon.Warn className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500" />
+              <div className="flex-1 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                <Icon.Warn className="h-3.5 w-3.5 shrink-0 text-red-500" />
                 {saveError}
               </div>
             )}
-
-            {/* Save button */}
-            <div className="mt-4 flex items-center gap-3">
-              <button
-                onClick={handleSave}
-                disabled={saving || bodyOver}
-                className="flex items-center gap-2 rounded-lg bg-green-700 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {saving ? (
-                  <>
-                    <Spin cls="h-3.5 w-3.5" /> Saving…
-                  </>
-                ) : (
-                  "Save changes"
-                )}
-              </button>
-              {saved && (
-                <span className="flex items-center gap-1 text-xs font-semibold text-green-600">
-                  <Icon.Check className="h-3.5 w-3.5" /> Saved
-                </span>
+            <button
+              onClick={handleSave}
+              disabled={saving || bodyOver}
+              className="flex items-center gap-2 rounded-lg bg-green-700 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {saving ? (
+                <>
+                  <Spin cls="h-4 w-4" /> Saving…
+                </>
+              ) : (
+                "Save changes"
               )}
-            </div>
+            </button>
+            {saved && (
+              <span className="flex items-center gap-1.5 text-sm font-semibold text-green-600">
+                <Icon.Check className="h-4 w-4" /> Saved
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Right: live preview */}
-        <div className="flex items-start justify-center p-4 lg:w-72 xl:w-80">
-          <WAMockup
-            header={header}
-            body={body}
-            footer={footer}
-            buttons={buttons}
-            createdAt={campaign.createdAt}
-          />
+        {/* ── Right: live preview ── */}
+        <div className="lg:w-80 xl:w-96 shrink-0 flex flex-col overflow-hidden rounded-b-xl lg:rounded-b-none lg:rounded-r-xl">
+          <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-2.5 flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="text-xs font-semibold text-slate-500">
+              Live preview
+            </span>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <WAPreview
+              header={header}
+              body={body}
+              footer={footer}
+              buttons={buttons}
+              createdAt={campaign.createdAt}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -1232,42 +1242,102 @@ export default function BroadcastCampaigns() {
           {/* Message preview (non-DRAFT) */}
           {detail.status !== "DRAFT" && (
             <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
-              <div className="border-b border-slate-100 px-4 py-2.5">
-                <span className="text-xs font-semibold text-slate-400">
-                  Message
+              {/* Card header */}
+              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  Message Preview
                 </span>
-              </div>
-              <div className="flex flex-col items-start gap-4 bg-[#eae6df] px-4 pb-4 pt-3 sm:flex-row">
-                <div className="inline-block max-w-xs rounded-2xl rounded-tl-sm bg-white px-3.5 py-2.5 shadow-sm sm:max-w-sm">
-                  {detail.headerText && (
-                    <p className="mb-1 border-b border-slate-100 pb-1 text-xs font-bold text-slate-800">
-                      {detail.headerText}
-                    </p>
-                  )}
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
-                    {detail.bodyText}
-                  </p>
-                  {detail.footerText && (
-                    <p className="mt-1 text-xs text-slate-400">
-                      {detail.footerText}
-                    </p>
-                  )}
-                  <p className="mt-1 text-right text-[10px] text-slate-400">
-                    {fmtShort(detail.createdAt)}
-                  </p>
-                </div>
-              </div>
-              <div className="border-t border-slate-100 px-4 py-2.5">
-                <span className="text-xs text-slate-400">Template: </span>
-                <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
-                  {detail.templateName}
-                </code>
-                {detail.agentPrompt && (
-                  <p className="mt-1 text-xs italic text-slate-400">
-                    "{detail.agentPrompt}"
-                  </p>
+                {detail.templateName && (
+                  <code className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                    {detail.templateName}
+                  </code>
                 )}
               </div>
+
+              {/* WhatsApp chat background */}
+              <div
+                className="px-5 py-5"
+                style={{
+                  background: "linear-gradient(180deg,#dfe7dc 0%,#d5dbcf 100%)",
+                }}
+              >
+                {/* Bubble */}
+                <div className="max-w-sm overflow-hidden rounded-2xl rounded-tl-none bg-white shadow-md">
+                  {/* Header image */}
+                  {detail.headerImageUrl && (
+                    <div className="w-full overflow-hidden rounded-t-2xl bg-slate-100">
+                      <img
+                        src={detail.headerImageUrl}
+                        alt="Campaign image"
+                        className="w-full h-auto block"
+                        onError={(e) => {
+                          e.target.style.display = "none";
+                          e.target.parentNode.style.display = "none";
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {/* Header text */}
+                  {detail.headerText && (
+                    <div className="border-b border-slate-100 px-3.5 pt-3 pb-2">
+                      <p className="text-sm font-bold leading-snug text-slate-900">
+                        {detail.headerText}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Body */}
+                  <div
+                    className={`px-3.5 ${detail.headerImageUrl || detail.headerText ? "pt-2.5" : "pt-3"} pb-1`}
+                  >
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
+                      {detail.bodyText}
+                    </p>
+                  </div>
+
+                  {/* Footer + timestamp */}
+                  <div className="flex items-end justify-between px-3.5 pt-1 pb-2.5">
+                    {detail.footerText ? (
+                      <p className="text-[11px] leading-tight text-slate-400">
+                        {detail.footerText}
+                      </p>
+                    ) : (
+                      <span />
+                    )}
+                    <p className="ml-3 shrink-0 text-[10px] text-slate-400">
+                      {fmtShort(detail.createdAt)} ✓✓
+                    </p>
+                  </div>
+
+                  {/* Buttons */}
+                  {detail.buttons?.filter((b) => b.text?.trim()).length > 0 && (
+                    <div className="divide-y divide-slate-100 border-t border-slate-100">
+                      {detail.buttons
+                        .filter((b) => b.text?.trim())
+                        .map((b, i) => (
+                          <div
+                            key={i}
+                            className="flex items-center justify-center py-2.5"
+                          >
+                            <span className="text-xs font-semibold text-[#128C7E]">
+                              {b.text}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Meta info footer */}
+              {detail.agentPrompt && (
+                <div className="border-t border-slate-100 bg-slate-50 px-4 py-2.5">
+                  <p className="text-[11px] italic text-slate-400">
+                    AI prompt: "{detail.agentPrompt}"
+                  </p>
+                </div>
+              )}
             </div>
           )}
 

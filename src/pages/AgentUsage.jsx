@@ -34,13 +34,24 @@ const AGENT_TABS = [
     icon: TruckIcon,
     color: "#c9a227",
   },
-  { id: "lifecycle", label: "Lifecycle Agent", icon: MegaphoneIcon, color: "#8a4fae" },
+  {
+    id: "lifecycle",
+    label: "Lifecycle Agent",
+    icon: MegaphoneIcon,
+    color: "#8a4fae",
+  },
   { id: "insights", label: "Insights", icon: SparkIcon, color: "#3b6ea5" },
   {
     id: "campaign",
     label: "Campaign Agent",
     icon: MegaphoneIcon,
     color: "#8b5fa8",
+  },
+  {
+    id: "gpt-image-2",
+    label: "gpt-image-2 model cost",
+    icon: SparkIcon,
+    color: "#d97706",
   },
 ];
 
