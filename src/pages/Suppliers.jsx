@@ -1,6 +1,15 @@
 // src/pages/Suppliers.jsx
 import { useEffect, useRef, useState } from "react";
-import { fetchSuppliers, fetchSupplierById } from "../api/suppliers";
+import toast from "react-hot-toast";
+import {
+  fetchSuppliers,
+  fetchSupplierById,
+  fetchCatalogBrands,
+  createSupplier,
+  updateSupplier,
+  deactivateSupplier,
+  deleteSupplierPermanently,
+} from "../api/suppliers";
 import PageHeader from "../components/ui/PageHeader";
 import DataTable from "../components/ui/DataTable";
 import Pagination from "../components/ui/Pagination";
@@ -91,6 +100,228 @@ const COLUMNS = [
   },
 ];
 
+const CADENCE_OPTIONS = ["DAILY", "WEEKLY", "ON_DEMAND"];
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]; // 0=Sun..6=Sat, matches supplierCheckDispatch.js
+
+const EMPTY_FORM = {
+  name: "",
+  contactName: "",
+  waPhone: "",
+  email: "",
+  checkCadence: "WEEKLY",
+  checkDayOfWeek: 1,
+  checkHour: 10,
+  isActive: true,
+  brands: [],
+};
+
+function detailToForm(detail) {
+  return {
+    name: detail.name || "",
+    contactName: detail.contactName || "",
+    waPhone: detail.waPhone || "",
+    email: detail.email || "",
+    checkCadence: detail.checkCadence || "WEEKLY",
+    checkDayOfWeek: detail.checkDayOfWeek ?? 1,
+    checkHour: detail.checkHour ?? 10,
+    isActive: detail.isActive ?? true,
+    brands: detail.brands || [],
+  };
+}
+
+function summarizeOutcome({ backfillSummary, cleanupSummary }) {
+  const parts = [];
+  if (backfillSummary?.variantsLinked) {
+    parts.push(`${backfillSummary.variantsLinked} product${backfillSummary.variantsLinked === 1 ? "" : "s"} linked`);
+  }
+  if (backfillSummary?.transferred) {
+    parts.push(
+      `${backfillSummary.transferred} transferred from previous supplier (price/lead-time needs reconfirmation)`,
+    );
+  }
+  if (cleanupSummary?.deleted) {
+    parts.push(`${cleanupSummary.deleted} unconfirmed link${cleanupSummary.deleted === 1 ? "" : "s"} removed`);
+  }
+  if (cleanupSummary?.keptForReview) {
+    parts.push(`${cleanupSummary.keptForReview} kept for review`);
+  }
+  return parts.join(", ");
+}
+
+// Scrollable checkbox list of real catalog vendor values — pick-from-
+// catalog, not free text, so there's no case mismatch against
+// backfillSupplierProductsByBrand's exact-string Product.vendor match.
+function BrandPicker({ catalogBrands, loading, selected, onToggle, selfSupplierId }) {
+  const [filter, setFilter] = useState("");
+
+  const visible = catalogBrands.filter((b) => b.brand.toLowerCase().includes(filter.toLowerCase()));
+
+  return (
+    <div>
+      <input
+        type="text"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        placeholder="Filter brands…"
+        className="mb-2 w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-700 placeholder:text-gray-400 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400"
+      />
+      <div className="max-h-56 overflow-y-auto rounded-lg border border-gray-100">
+        {loading ? (
+          <p className="p-3 text-sm text-gray-400">Loading brands…</p>
+        ) : visible.length === 0 ? (
+          <p className="p-3 text-sm text-gray-400">No brands match.</p>
+        ) : (
+          visible.map(({ brand, owner }) => {
+            const isSelf = owner && owner.ownerSupplierId === selfSupplierId;
+            const takenByOther = owner && !isSelf;
+            return (
+              <label
+                key={brand}
+                className={`flex items-center justify-between gap-2 border-b border-gray-50 px-3 py-1.5 text-sm last:border-0 ${
+                  takenByOther ? "text-gray-400" : "text-gray-800"
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(brand)}
+                    disabled={takenByOther}
+                    onChange={() => onToggle(brand)}
+                    className="rounded border-gray-300"
+                  />
+                  {brand}
+                </span>
+                {takenByOther && <span className="text-xs text-gray-400">Taken by {owner.ownerSupplierName}</span>}
+              </label>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SupplierForm({ form, setForm, catalogBrands, catalogLoading, selfSupplierId }) {
+  function set(field, value) {
+    setForm((f) => ({ ...f, [field]: value }));
+  }
+
+  function toggleBrand(brand) {
+    setForm((f) => ({
+      ...f,
+      brands: f.brands.includes(brand) ? f.brands.filter((b) => b !== brand) : [...f.brands, brand],
+    }));
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="mb-1 block text-xs font-medium text-gray-500">Name *</label>
+        <input
+          type="text"
+          value={form.name}
+          onChange={(e) => set("name", e.target.value)}
+          className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400"
+        />
+      </div>
+      <div>
+        <label className="mb-1 block text-xs font-medium text-gray-500">Contact name</label>
+        <input
+          type="text"
+          value={form.contactName}
+          onChange={(e) => set("contactName", e.target.value)}
+          className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400"
+        />
+      </div>
+      <div>
+        <label className="mb-1 block text-xs font-medium text-gray-500">WhatsApp phone *</label>
+        <input
+          type="text"
+          value={form.waPhone}
+          onChange={(e) => set("waPhone", e.target.value)}
+          placeholder="91XXXXXXXXXX"
+          className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400"
+        />
+      </div>
+      <div>
+        <label className="mb-1 block text-xs font-medium text-gray-500">Email</label>
+        <input
+          type="email"
+          value={form.email}
+          onChange={(e) => set("email", e.target.value)}
+          className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-500">Check cadence *</label>
+          <select
+            value={form.checkCadence}
+            onChange={(e) => set("checkCadence", e.target.value)}
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400"
+          >
+            {CADENCE_OPTIONS.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-500">Check hour (0-23)</label>
+          <input
+            type="number"
+            min={0}
+            max={23}
+            value={form.checkHour}
+            onChange={(e) => set("checkHour", Number(e.target.value))}
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-800 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400"
+          />
+        </div>
+      </div>
+
+      {form.checkCadence === "WEEKLY" && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-500">Check day of week</label>
+          <select
+            value={form.checkDayOfWeek}
+            onChange={(e) => set("checkDayOfWeek", Number(e.target.value))}
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400"
+          >
+            {WEEKDAY_LABELS.map((label, idx) => (
+              <option key={label} value={idx}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <label className="flex items-center gap-2 text-sm text-gray-700">
+        <input
+          type="checkbox"
+          checked={form.isActive}
+          onChange={(e) => set("isActive", e.target.checked)}
+          className="rounded border-gray-300"
+        />
+        Active
+      </label>
+
+      <div>
+        <label className="mb-1 block text-xs font-medium text-gray-500">Brands</label>
+        <BrandPicker
+          catalogBrands={catalogBrands}
+          loading={catalogLoading}
+          selected={form.brands}
+          onToggle={toggleBrand}
+          selfSupplierId={selfSupplierId}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function Suppliers() {
   const [search, setSearch] = useState("");
   const [isActive, setIsActive] = useState("");
@@ -102,6 +333,16 @@ export default function Suppliers() {
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // null (viewing, no drawer open yet handled by selectedId) | "view" |
+  // "edit" | "create" — the drawer reuses one body for all three, see render.
+  const [drawerMode, setDrawerMode] = useState(null);
+  const [detailTab, setDetailTab] = useState("products");
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [catalogBrands, setCatalogBrands] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const debounceRef = useRef(null);
 
@@ -117,7 +358,15 @@ export default function Suppliers() {
         setTotal(res.data.total);
       })
       .finally(() => setLoading(false));
-  }, [search, isActive, offset]);
+  }, [search, isActive, offset, refreshTick]);
+
+  function loadCatalogBrands() {
+    setCatalogLoading(true);
+    fetchCatalogBrands()
+      .then((res) => setCatalogBrands(res.data.brands))
+      .catch(() => toast.error("Couldn't load catalog brands"))
+      .finally(() => setCatalogLoading(false));
+  }
 
   function handleSearchChange(value) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -135,15 +384,129 @@ export default function Suppliers() {
 
   function openSupplier(row) {
     setSelectedId(row.id);
+    setDrawerMode("view");
+    setDetailTab("products");
     setDetailLoading(true);
     fetchSupplierById(row.id)
       .then((res) => setDetail(res.data.supplier))
       .finally(() => setDetailLoading(false));
   }
 
+  function openCreate() {
+    setSelectedId(null);
+    setDetail(null);
+    setForm(EMPTY_FORM);
+    setDrawerMode("create");
+    loadCatalogBrands();
+  }
+
+  function startEdit() {
+    setForm(detailToForm(detail));
+    setDrawerMode("edit");
+    loadCatalogBrands();
+  }
+
+  function cancelEdit() {
+    if (drawerMode === "create") {
+      closeDrawer();
+    } else {
+      setDrawerMode("view");
+    }
+  }
+
   function closeDrawer() {
     setSelectedId(null);
     setDetail(null);
+    setDrawerMode(null);
+  }
+
+  async function handleSave() {
+    if (!form.name || !form.waPhone || !form.checkCadence) {
+      toast.error("Name, WhatsApp phone, and check cadence are required");
+      return;
+    }
+    setSaving(true);
+    try {
+      if (drawerMode === "create") {
+        const res = await createSupplier(form);
+        toast.success(
+          ["Supplier created", summarizeOutcome(res.data)].filter(Boolean).join(" — "),
+        );
+        closeDrawer();
+      } else {
+        const res = await updateSupplier(selectedId, form);
+        toast.success(["Supplier updated", summarizeOutcome(res.data)].filter(Boolean).join(" — "));
+        setDetail(res.data.supplier);
+        setDrawerMode("view");
+      }
+      setRefreshTick((t) => t + 1);
+    } catch (err) {
+      const data = err.response?.data;
+      if (data?.error === "brand_conflict") {
+        const names = data.conflicts.map((c) => `${c.brand} (taken by ${c.ownerSupplierName})`).join(", ");
+        toast.error(`Brand already assigned: ${names}`);
+      } else {
+        toast.error(data?.error || "Couldn't save supplier. Try again.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDeactivate() {
+    if (!detail) return;
+    if (!window.confirm(`Deactivate ${detail.name}? Their brands will be cleared and can be reassigned to another supplier.`)) {
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await deactivateSupplier(detail.id);
+      const cleanup = res.data.cleanupSummary;
+      toast.success(
+        ["Supplier deactivated", cleanup?.deleted ? `${cleanup.deleted} unconfirmed link(s) removed` : null]
+          .filter(Boolean)
+          .join(" — "),
+      );
+      setRefreshTick((t) => t + 1);
+      closeDrawer();
+    } catch (err) {
+      toast.error(err.response?.data?.error || "Couldn't deactivate supplier. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDeletePermanent() {
+    if (!detail) return;
+    if (!window.confirm(`Permanently delete ${detail.name}? This cannot be undone.`)) return;
+
+    setSaving(true);
+    try {
+      await deleteSupplierPermanently(detail.id);
+      toast.success(`${detail.name} permanently deleted.`);
+      setRefreshTick((t) => t + 1);
+      closeDrawer();
+    } catch (err) {
+      const data = err.response?.data;
+      if (data?.error === "has_import_history") {
+        toast.error(data.message);
+      } else if (data?.error === "has_linked_products") {
+        if (window.confirm(`${data.message}\n\nContinue anyway?`)) {
+          try {
+            await deleteSupplierPermanently(detail.id, { force: true });
+            toast.success(`${detail.name} permanently deleted.`);
+            setRefreshTick((t) => t + 1);
+            closeDrawer();
+          } catch (err2) {
+            toast.error(err2.response?.data?.message || "Couldn't delete supplier. Try again.");
+          }
+        }
+      } else {
+        toast.error(data?.message || data?.error || "Couldn't delete supplier. Try again.");
+      }
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -172,6 +535,12 @@ export default function Suppliers() {
               onChange={(e) => handleSearchChange(e.target.value)}
               className="w-full rounded-lg border border-gray-200 px-3.5 py-2 text-sm text-gray-700 placeholder:text-gray-400 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400 sm:w-64"
             />
+            <button
+              onClick={openCreate}
+              className="whitespace-nowrap rounded-lg bg-fairway-700 px-4 py-2 text-sm font-medium text-white hover:bg-fairway-800"
+            >
+              New supplier
+            </button>
           </div>
         }
       />
@@ -199,12 +568,38 @@ export default function Suppliers() {
       </div>
 
       <Drawer
-        open={!!selectedId}
+        open={drawerMode !== null}
         onClose={closeDrawer}
-        title={detail?.name || "Loading…"}
-        subtitle={detail?.contactName}
+        title={drawerMode === "create" ? "New supplier" : detail?.name || "Loading…"}
+        subtitle={drawerMode === "create" ? undefined : detail?.contactName}
       >
-        {detailLoading || !detail ? (
+        {drawerMode === "create" || drawerMode === "edit" ? (
+          <div className="space-y-5">
+            <SupplierForm
+              form={form}
+              setForm={setForm}
+              catalogBrands={catalogBrands}
+              catalogLoading={catalogLoading}
+              selfSupplierId={drawerMode === "edit" ? selectedId : null}
+            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="rounded-lg bg-fairway-700 px-4 py-2 text-sm font-medium text-white hover:bg-fairway-800 disabled:opacity-50"
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+              <button
+                onClick={cancelEdit}
+                disabled={saving}
+                className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : detailLoading || !detail ? (
           <div className="space-y-3">
             {[...Array(4)].map((_, i) => (
               <div key={i} className="h-6 animate-pulse rounded bg-gray-100" />
@@ -212,6 +607,32 @@ export default function Suppliers() {
           </div>
         ) : (
           <div className="space-y-6">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={startEdit}
+                className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50"
+              >
+                Edit
+              </button>
+              {detail.isActive && (
+                <button
+                  onClick={handleDeactivate}
+                  disabled={saving}
+                  className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                >
+                  Deactivate
+                </button>
+              )}
+              <button
+                onClick={handleDeletePermanent}
+                disabled={saving}
+                className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                title="Permanently removes this supplier and, if confirmed, their linked products and check history. Cannot be undone."
+              >
+                Delete permanently
+              </button>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-lg border border-gray-100 p-3">
                 <p className="text-xs text-gray-400">Reliability score</p>
@@ -230,41 +651,52 @@ export default function Suppliers() {
             </div>
 
             <div>
-              <h3 className="mb-2 text-sm font-medium text-gray-700">
-                Products supplied
-              </h3>
-              {detail.SupplierProduct && detail.SupplierProduct.length > 0 ? (
-                <ul className="divide-y divide-gray-100 rounded-lg border border-gray-100">
-                  {detail.SupplierProduct.map((sp) => (
-                    <li
-                      key={sp.id}
-                      className="flex items-center justify-between px-3 py-2.5 text-sm"
-                    >
-                      <div>
-                        <p className="text-gray-900">{sp.Product?.title}</p>
-                        {sp.Variant && (
-                          <p className="text-xs text-gray-400">
-                            {sp.Variant.title}
-                          </p>
-                        )}
-                      </div>
-                      <span className="text-gray-600">
-                        {formatCurrency(sp.costPrice)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-sm text-gray-400">No products linked yet.</p>
-              )}
-            </div>
+              <div className="mb-3 flex gap-1 border-b border-gray-200">
+                {[
+                  { key: "products", label: "Products supplied", count: detail.SupplierProduct?.length ?? 0 },
+                  { key: "checks", label: "Recent stock checks", count: detail.SupplierCheck?.length ?? 0 },
+                ].map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => setDetailTab(t.key)}
+                    className={`border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                      detailTab === t.key
+                        ? "border-fairway-600 text-fairway-800"
+                        : "border-transparent text-gray-500 hover:text-gray-700"
+                    }`}
+                  >
+                    {t.label} ({t.count})
+                  </button>
+                ))}
+              </div>
 
-            <div>
-              <h3 className="mb-2 text-sm font-medium text-gray-700">
-                Recent stock checks
-              </h3>
-              {detail.SupplierCheck && detail.SupplierCheck.length > 0 ? (
-                <ul className="divide-y divide-gray-100 rounded-lg border border-gray-100">
+              {detailTab === "products" ? (
+                detail.SupplierProduct && detail.SupplierProduct.length > 0 ? (
+                  <ul className="max-h-[28rem] divide-y divide-gray-100 overflow-y-auto rounded-lg border border-gray-100">
+                    {detail.SupplierProduct.map((sp) => (
+                      <li
+                        key={sp.id}
+                        className="flex items-center justify-between px-3 py-2.5 text-sm"
+                      >
+                        <div>
+                          <p className="text-gray-900">{sp.Product?.title}</p>
+                          {sp.Variant && (
+                            <p className="text-xs text-gray-400">
+                              {sp.Variant.title}
+                            </p>
+                          )}
+                        </div>
+                        <span className="text-gray-600">
+                          {formatCurrency(sp.costPrice)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-gray-400">No products linked yet.</p>
+                )
+              ) : detail.SupplierCheck && detail.SupplierCheck.length > 0 ? (
+                <ul className="max-h-[28rem] divide-y divide-gray-100 overflow-y-auto rounded-lg border border-gray-100">
                   {detail.SupplierCheck.map((check) => (
                     <li
                       key={check.id}
