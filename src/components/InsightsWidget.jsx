@@ -18,12 +18,25 @@
 //      surfaces which titles matched/didn't under the preview (see imgS.matchedProductTitles
 //      / imgS.unmatchedProductTitles below) so staff can see this at a glance.
 //   3. Frontend shows CampaignContentPicker with 3 selectable variants + editable text
-//   4. Staff picks/edits → clicks "Save Draft" → frontend POSTs to /api/campaigns/draft
-//      then PATCHes /api/campaigns/:id/template with full component data
-//      (IMAGE headerType stored as-is; image is generated at submit time)
+//   4a. Staff picks/edits → clicks "Save Draft" → frontend POSTs to /api/campaigns/draft
+//       then PATCHes /api/campaigns/:id/template with full component data
+//       (IMAGE headerType stored as-is; image is generated at submit time)
+//   4b. Staff says "save it" / "go with option 1" etc → agent calls save_campaign_draft
+//       → backend saves draft directly → frontend receives savedCampaign in response
+//       and renders CampaignSavedCard with "Open in Campaigns →"
 //   5. Card flips to CampaignSavedCard with "Open in Campaigns →"
+//
+// Agent-triggered save (4b) path:
+//   - Image generation only happens when staff opens the picker and selects a variant.
+//   - When agent saves directly (before staff ever opens the picker), no image has been
+//     generated yet. headerImageUrl will be null in the DB — this is correct and expected.
+//     The image is generated at submit time (same as the manual path when staff saves
+//     without previewing the image first).
+//   - The picker card (4a path) is still shown alongside the saved card so staff can
+//     still regenerate the image and update the template if they want to.
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { askInsights } from "../api/insights";
 import {
@@ -51,13 +64,15 @@ import {
 // Lets staff pick from 3 variants (with optional header/footer/buttons), edit,
 // then Save Draft.
 // ─────────────────────────────────────────────────────────────────────────────
-function CampaignContentPicker({ data, onSaved }) {
+function CampaignContentPicker({ data, onSaved, onImageGenerated = () => {} }) {
   const [selectedIdx, setSelectedIdx] = useState(data.recommendedIndex ?? 0);
   const [editedText, setEditedText] = useState(
     data.variants[data.recommendedIndex ?? 0]?.bodyText || "",
   );
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState(null);
+  // Full-size preview — set to an image URL to open the lightbox, null to close it.
+  const [zoomedImage, setZoomedImage] = useState(null);
 
   // Cache key for sessionStorage — scoped to this campaign so different campaigns
   // don't share each other's images within the same browser tab.
@@ -402,6 +417,13 @@ function CampaignContentPicker({ data, onSaved }) {
             selectedProductImageIndex: json.selectedProductImageIndex ?? 0,
           },
         }));
+        // Tell the agent the generated image URL so it can pass it to
+        // save_campaign_draft if staff verbally confirms. This hidden
+        // system note is injected into the conversation history — the
+        // agent sees it on its next turn and MUST forward the URL.
+        if (json.imageUrl) {
+          onImageGenerated(idx, json.imageUrl);
+        }
         // Reset any stale wording overrides from a previous image for this
         // variant — the fresh generation already has the agent's latest
         // eyebrow/headline/badge baked in as the starting point.
@@ -692,11 +714,16 @@ function CampaignContentPicker({ data, onSaved }) {
                           <img
                             src={imgS.url}
                             alt="AI-generated golf scene"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setZoomedImage(imgS.url);
+                            }}
                             style={{
                               width: "100%",
                               display: "block",
                               aspectRatio: "1/1",
                               objectFit: "cover",
+                              cursor: "zoom-in",
                             }}
                           />
                         </div>
@@ -1059,11 +1086,13 @@ function CampaignContentPicker({ data, onSaved }) {
                         <img
                           src={imgS.url}
                           alt={`${imgS.productTitle} — catalog photo`}
+                          onClick={() => setZoomedImage(imgS.url)}
                           style={{
                             width: "100%",
                             display: "block",
                             aspectRatio: "1/1",
                             objectFit: "cover",
+                            cursor: "zoom-in",
                           }}
                         />
                       </div>
@@ -1152,11 +1181,13 @@ function CampaignContentPicker({ data, onSaved }) {
                         <img
                           src={imgS.url}
                           alt="Real product photo preview"
+                          onClick={() => setZoomedImage(imgS.url)}
                           style={{
                             width: "100%",
                             display: "block",
                             aspectRatio: "1/1",
                             objectFit: "cover",
+                            cursor: "zoom-in",
                           }}
                         />
                       </div>
@@ -1247,11 +1278,13 @@ function CampaignContentPicker({ data, onSaved }) {
                       <img
                         src={imgS.url}
                         alt="AI-generated campaign scene preview"
+                        onClick={() => setZoomedImage(imgS.url)}
                         style={{
                           width: "100%",
                           display: "block",
                           aspectRatio: "1/1",
                           objectFit: "cover",
+                          cursor: "zoom-in",
                         }}
                       />
                     </div>
@@ -1674,6 +1707,68 @@ function CampaignContentPicker({ data, onSaved }) {
                 : " An AI scene will be generated at submit time.")}
         </div>
       </div>
+
+      {/* Full-size image preview — click any thumbnail above to open, click
+          anywhere on the overlay (or the × ) to close. Rendered via portal so
+          it isn't clipped by the widget's own scroll/overflow container. */}
+      {zoomedImage &&
+        createPortal(
+          <div
+            data-insights-lightbox
+            onClick={(e) => {
+              e.stopPropagation();
+              setZoomedImage(null);
+            }}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.82)",
+              zIndex: 10000,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 24,
+              cursor: "zoom-out",
+            }}
+          >
+            <img
+              src={zoomedImage}
+              alt="Full-size campaign image preview"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                maxWidth: "min(90vw, 720px)",
+                maxHeight: "90vh",
+                borderRadius: 10,
+                boxShadow: "0 8px 40px rgba(0,0,0,0.5)",
+                cursor: "default",
+              }}
+            />
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setZoomedImage(null);
+              }}
+              aria-label="Close preview"
+              style={{
+                position: "absolute",
+                top: 18,
+                right: 18,
+                width: 34,
+                height: 34,
+                borderRadius: "50%",
+                border: "none",
+                background: "rgba(255,255,255,0.15)",
+                color: "#fff",
+                fontSize: 18,
+                lineHeight: 1,
+                cursor: "pointer",
+              }}
+            >
+              ✕
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -1681,49 +1776,224 @@ function CampaignContentPicker({ data, onSaved }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // CampaignSavedCard
 //
-// Shown after Save Draft completes successfully.
+// Shown after Save Draft completes — either from the manual "Save Draft"
+// button (via ContentPickerWrapper.onSaved) or from the agent calling
+// save_campaign_draft directly (via savedCampaign in the message).
 // ─────────────────────────────────────────────────────────────────────────────
 function CampaignSavedCard({ campaign }) {
   const navigate = useNavigate();
+  const [zoomedImage, setZoomedImage] = useState(null);
   return (
     <div
       style={{
         border: "1px solid #27272a",
         borderLeft: "3px solid #16a34a",
         borderRadius: 8,
-        padding: "10px 12px",
+        overflow: "hidden",
         background: "#18181b",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 10,
+        boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
       }}
     >
-      <div>
-        <div style={{ fontSize: 12, fontWeight: 600, color: "#f4f4f5" }}>
-          ✅ {campaign.name}
-        </div>
-        <div style={{ fontSize: 11, color: "#71717a", marginTop: 2 }}>
-          {campaign.audienceSize} recipient
-          {campaign.audienceSize !== 1 ? "s" : ""} · Draft saved
-        </div>
-      </div>
-      <button
-        onClick={() => navigate(`/broadcast-campaigns?id=${campaign.id}`)}
+      {/* Top section: name + audience + status */}
+      <div
         style={{
-          background: "#16a34a",
-          color: "#fff",
-          border: "none",
-          borderRadius: 6,
-          padding: "5px 12px",
-          fontSize: 11,
-          fontWeight: 600,
-          cursor: "pointer",
-          whiteSpace: "nowrap",
+          padding: "10px 12px 8px",
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 10,
         }}
       >
-        Open →
-      </button>
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: "#f4f4f5",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 18,
+                height: 18,
+                borderRadius: "50%",
+                background: "#16a34a",
+                fontSize: 10,
+                flexShrink: 0,
+              }}
+            >
+              ✓
+            </span>
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {campaign.name}
+            </span>
+          </div>
+          <div
+            style={{
+              fontSize: 11,
+              color: "#71717a",
+              marginTop: 3,
+              paddingLeft: 24,
+            }}
+          >
+            {campaign.audienceSize} recipient
+            {campaign.audienceSize !== 1 ? "s" : ""} · Draft saved
+          </div>
+        </div>
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            color: "#4ade80",
+            background: "rgba(74,222,128,0.12)",
+            border: "1px solid rgba(74,222,128,0.25)",
+            borderRadius: 4,
+            padding: "2px 7px",
+            whiteSpace: "nowrap",
+            flexShrink: 0,
+          }}
+        >
+          DRAFT
+        </span>
+      </div>
+
+      {/* Header image thumbnail — click to view full size */}
+      {campaign.headerImageUrl && (
+        <div style={{ padding: "0 12px 10px" }}>
+          <img
+            src={campaign.headerImageUrl}
+            alt="Campaign header preview"
+            onClick={() => setZoomedImage(campaign.headerImageUrl)}
+            style={{
+              width: "100%",
+              maxHeight: 160,
+              display: "block",
+              objectFit: "cover",
+              borderRadius: 6,
+              border: "1px solid #27272a",
+              cursor: "zoom-in",
+            }}
+          />
+        </div>
+      )}
+
+      {/* Divider */}
+      <div style={{ height: 1, background: "#27272a" }} />
+
+      {/* CTA row */}
+      <div
+        style={{
+          padding: "8px 12px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <div style={{ fontSize: 10.5, color: "#71717a", lineHeight: 1.4 }}>
+          Review the template, then submit to Meta when ready.
+          {campaign.headerType === "IMAGE" && !campaign.headerImageUrl && (
+            <span style={{ color: "#a1a1aa" }}>
+              {" "}
+              Image will be generated at submit time.
+            </span>
+          )}
+        </div>
+        <button
+          onClick={() => navigate(`/broadcast-campaigns?id=${campaign.id}`)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            background: "#16a34a",
+            color: "#fff",
+            border: "none",
+            borderRadius: 6,
+            padding: "6px 14px",
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+            flexShrink: 0,
+            transition: "background 0.12s",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = "#15803d")}
+          onMouseLeave={(e) => (e.currentTarget.style.background = "#16a34a")}
+        >
+          Open Campaign →
+        </button>
+      </div>
+
+      {zoomedImage &&
+        createPortal(
+          <div
+            data-insights-lightbox
+            onClick={(e) => {
+              e.stopPropagation();
+              setZoomedImage(null);
+            }}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.82)",
+              zIndex: 10000,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 24,
+              cursor: "zoom-out",
+            }}
+          >
+            <img
+              src={zoomedImage}
+              alt="Full-size campaign image preview"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                maxWidth: "min(90vw, 720px)",
+                maxHeight: "90vh",
+                borderRadius: 10,
+                boxShadow: "0 8px 40px rgba(0,0,0,0.5)",
+                cursor: "default",
+              }}
+            />
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setZoomedImage(null);
+              }}
+              aria-label="Close preview"
+              style={{
+                position: "absolute",
+                top: 18,
+                right: 18,
+                width: 34,
+                height: 34,
+                borderRadius: "50%",
+                border: "none",
+                background: "rgba(255,255,255,0.15)",
+                color: "#fff",
+                fontSize: 18,
+                lineHeight: 1,
+                cursor: "pointer",
+              }}
+            >
+              ✕
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -1733,14 +2003,20 @@ function CampaignSavedCard({ campaign }) {
 //
 // Manages the local "saved" state so the picker flips to saved card in-place.
 // ─────────────────────────────────────────────────────────────────────────────
-function ContentPickerWrapper({ data }) {
+function ContentPickerWrapper({ data, onImageGenerated }) {
   const [savedCampaign, setSavedCampaign] = useState(null);
 
   if (savedCampaign) {
     return <CampaignSavedCard campaign={savedCampaign} />;
   }
 
-  return <CampaignContentPicker data={data} onSaved={setSavedCampaign} />;
+  return (
+    <CampaignContentPicker
+      data={data}
+      onSaved={setSavedCampaign}
+      onImageGenerated={onImageGenerated}
+    />
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1861,6 +2137,12 @@ export default function InsightsWidget() {
   useEffect(() => {
     if (!isOpen) return;
     function handlePointerDown(e) {
+      // The image lightbox is rendered via a portal straight into
+      // document.body, so it's never a DOM descendant of panelRef — without
+      // this check, any click inside it (image, ×, backdrop) looks like an
+      // "outside click" and closes the whole widget before the lightbox's
+      // own onClick handlers even get a chance to run.
+      if (e.target.closest("[data-insights-lightbox]")) return;
       if (panelRef.current && !panelRef.current.contains(e.target)) {
         setIsOpen(false);
       }
@@ -1901,12 +2183,75 @@ export default function InsightsWidget() {
       // instead of campaignData (from draft_campaign — now frontend-driven)
       const contentPicker = res.data.contentPicker || null;
 
+      // Agent-triggered save: save_campaign_draft returns action SHOW_SAVED_CAMPAIGN_CARD
+      // with campaignId, campaignName, audienceSize, headerType, headerImageUrl.
+      // We render CampaignSavedCard directly — no picker needed.
+      let savedCampaign = res.data.savedCampaign || null;
+
+      // If the agent saved with headerType IMAGE but null headerImageUrl,
+      // check sessionStorage for a previously-generated image for this campaign
+      // (generated when staff opened the picker). If found, patch the DB now.
+      if (
+        savedCampaign &&
+        savedCampaign.headerType === "IMAGE" &&
+        !savedCampaign.headerImageUrl
+      ) {
+        try {
+          // The cache key is based on the campaignName used when the picker was shown
+          // (from suggest_campaign_content). The agent may save with a slightly different
+          // name (e.g. "Pro V1 Golf Balls Stock Update" vs "Pro V1 Stock Update").
+          // So we try: (1) savedCampaign.campaignName, (2) the last contentPickerData
+          // campaignName seen in the message history (which is what actually seeded the cache).
+          const lastPickerName = [...messages]
+            .reverse()
+            .find((m) => m.contentPickerData)?.contentPickerData?.campaignName;
+
+          const cacheKeysToTry = [
+            `imgcache:${savedCampaign.campaignName}`,
+            lastPickerName ? `imgcache:${lastPickerName}` : null,
+          ].filter(Boolean);
+
+          let cached = {};
+          for (const cacheKey of cacheKeysToTry) {
+            const raw = sessionStorage.getItem(cacheKey);
+            if (raw) {
+              cached = JSON.parse(raw);
+              if (Object.values(cached).some((url) => !!url)) break;
+            }
+          }
+
+          // Pick the first generated image URL from any variant index
+          const imageUrl = Object.values(cached).find((url) => !!url) || null;
+          if (imageUrl) {
+            console.log(
+              "[InsightsWidget] Patching headerImageUrl after agent save:",
+              { campaignId: savedCampaign.campaignId, imageUrl },
+            );
+            // Patch the DB — fire and forget (don't block the UI)
+            updateCampaignTemplate(savedCampaign.campaignId, {
+              headerType: savedCampaign.headerType,
+              headerImageUrl: imageUrl,
+            }).catch((err) =>
+              console.error(
+                "[InsightsWidget] Failed to patch headerImageUrl after agent save:",
+                err,
+              ),
+            );
+            // Update local savedCampaign so the card shows the image hint correctly
+            savedCampaign = { ...savedCampaign, headerImageUrl: imageUrl };
+          }
+        } catch (_) {
+          // sessionStorage unavailable — skip silently
+        }
+      }
+
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
           text: reply,
           contentPickerData: contentPicker,
+          savedCampaign: savedCampaign,
         },
       ]);
     } catch (err) {
@@ -2027,7 +2372,7 @@ export default function InsightsWidget() {
             )}
 
             {messages.map((m, i) =>
-              m.role === "user" ? (
+              m._hidden ? null : m.role === "user" ? (
                 <div
                   key={i}
                   className="insights-message-in ml-auto w-fit max-w-[82%] rounded-2xl rounded-tr-sm bg-fairway-700 px-3.5 py-2.5 text-[13.5px] leading-relaxed text-white"
@@ -2045,7 +2390,53 @@ export default function InsightsWidget() {
                   {/* v2: content picker card (replaces old CampaignNotice) */}
                   {m.contentPickerData && (
                     <div style={{ paddingLeft: 34, marginTop: 8 }}>
-                      <ContentPickerWrapper data={m.contentPickerData} />
+                      <ContentPickerWrapper
+                        data={m.contentPickerData}
+                        onImageGenerated={(variantIdx, imageUrl) => {
+                          // Inject a hidden system note so the agent knows the
+                          // generated image URL on its next turn. When staff
+                          // says "save it", the agent MUST forward this URL as
+                          // headerImageUrl in save_campaign_draft.
+                          setMessages((prev) => {
+                            // Replace or append the system note — one per picker
+                            // card (keyed by campaignName + variantIdx). If it
+                            // already exists (e.g. staff regenerated the image),
+                            // update it in place so the history stays clean.
+                            const noteRole = `__img_note_${m.contentPickerData.campaignName}_${variantIdx}`;
+                            const noteText = `[SYSTEM NOTE — do not repeat to staff] The header image for variant ${variantIdx + 1} of the "${m.contentPickerData.campaignName}" campaign has been generated. URL: ${imageUrl} — You MUST pass this exact URL as headerImageUrl when calling save_campaign_draft for this variant.`;
+                            const existing = prev.findIndex(
+                              (msg) => msg._noteKey === noteRole,
+                            );
+                            if (existing !== -1) {
+                              const next = [...prev];
+                              next[existing] = {
+                                role: "user",
+                                text: noteText,
+                                _noteKey: noteRole,
+                                _hidden: true,
+                              };
+                              return next;
+                            }
+                            return [
+                              ...prev,
+                              {
+                                role: "user",
+                                text: noteText,
+                                _noteKey: noteRole,
+                                _hidden: true,
+                              },
+                            ];
+                          });
+                        }}
+                      />
+                    </div>
+                  )}
+                  {/* Agent-triggered save: show saved card directly when agent
+                      called save_campaign_draft on staff's behalf. The picker
+                      card above is NOT shown — the agent already saved it. */}
+                  {m.savedCampaign && !m.contentPickerData && (
+                    <div style={{ paddingLeft: 34, marginTop: 8 }}>
+                      <CampaignSavedCard campaign={m.savedCampaign} />
                     </div>
                   )}
                 </div>

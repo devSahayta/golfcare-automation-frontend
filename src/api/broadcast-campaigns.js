@@ -19,6 +19,9 @@ export function scheduleCampaign(id, scheduledAt) {
 export const cancelCampaign = (id) =>
   api.post(`/api/broadcast-campaigns/${id}/cancel`);
 
+export const retryCampaign = (id) =>
+  api.post(`/api/broadcast-campaigns/${id}/retry`);
+
 export async function saveCampaignDraft({
   name,
   bodyText,

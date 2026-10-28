@@ -19,6 +19,7 @@ import {
   cancelCampaign,
   updateCampaignTemplate,
   scheduleCampaign,
+  retryCampaign,
 } from "../api/broadcast-campaigns";
 import { MegaphoneIcon } from "../components/icons";
 
@@ -282,8 +283,9 @@ function RBadge({ status }) {
 }
 
 function Bar({ sent, failed, total }) {
-  const sp = total > 0 ? Math.round((sent / total) * 100) : 0;
-  const fp = total > 0 ? Math.round((failed / total) * 100) : 0;
+  const sp = total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : 0;
+  const fp =
+    total > 0 ? Math.min(100 - sp, Math.round((failed / total) * 100)) : 0;
   return (
     <div>
       <div className="mb-1 flex justify-between text-xs text-slate-500">
@@ -954,6 +956,8 @@ export default function BroadcastCampaigns() {
                 status: c.status,
                 sentCount: c.sentCount,
                 failedCount: c.failedCount,
+                skippedCount: c.skippedCount,
+                audienceSize: c.audienceSize,
               }
             : x,
         ),
@@ -1073,6 +1077,25 @@ export default function BroadcastCampaigns() {
       await loadList();
     } catch (e) {
       setActionError(e.response?.data?.error ?? "Failed to cancel.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleRetry() {
+    const failedRecipientCount =
+      detail.BroadcastRecipient?.filter((r) => r.status === "FAILED").length ||
+      0;
+    if (!window.confirm(`Retry ${failedRecipientCount} failed message(s)?`))
+      return;
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      await retryCampaign(detail.id);
+      await loadDetail(detail.id);
+      await loadList();
+    } catch (e) {
+      setActionError(e.response?.data?.error ?? "Failed to retry.");
     } finally {
       setActionLoading(false);
     }
@@ -1207,6 +1230,58 @@ export default function BroadcastCampaigns() {
             metaRejectionReason={detail.metaRejectionReason}
             scheduledFor={detail.scheduledFor}
           />
+
+          {/* Retry failed messages — near the top so staff see it right
+             away, without scrolling past stats/preview/recipients.
+             Derived from the actual recipient rows rather than
+             detail.failedCount, which is a denormalized counter that can
+             drift from reality. */}
+          {(() => {
+            const failedRecipientCount =
+              detail.BroadcastRecipient?.filter((r) => r.status === "FAILED")
+                .length || 0;
+            if (
+              (detail.status !== "COMPLETED" && detail.status !== "FAILED") ||
+              failedRecipientCount === 0
+            ) {
+              return null;
+            }
+            return (
+              <div className="mb-5 flex flex-col gap-3 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-orange-100">
+                    <Icon.Warn className="h-4 w-4 text-orange-500" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-orange-800">
+                      {failedRecipientCount} message
+                      {failedRecipientCount !== 1 ? "s" : ""} failed to send
+                    </p>
+                    <p className="mt-0.5 text-xs text-orange-600">
+                      Consent will be re-checked before resending.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={handleRetry}
+                  disabled={actionLoading}
+                  className="flex w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                >
+                  {actionLoading ? (
+                    <>
+                      <Spin /> Retrying…
+                    </>
+                  ) : (
+                    <>
+                      <Icon.Send className="h-4 w-4" />
+                      Retry {failedRecipientCount} message
+                      {failedRecipientCount !== 1 ? "s" : ""}
+                    </>
+                  )}
+                </button>
+              </div>
+            );
+          })()}
 
           {/* stats */}
           <div className="mb-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
