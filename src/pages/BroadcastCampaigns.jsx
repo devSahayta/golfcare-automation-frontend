@@ -119,6 +119,8 @@ const RSTATUS = {
 const POLLING = new Set(["SUBMITTED", "SCHEDULED", "PENDING_SCHEDULE"]);
 const POLL_MS = 6000;
 const DONE = new Set(["COMPLETED", "CANCELLED", "FAILED", "REJECTED"]);
+// Must match broadcastFanOutService.js's MAX_RETRY_ATTEMPTS on the backend.
+const MAX_RETRY_ATTEMPTS = 3;
 
 // ─── icons ────────────────────────────────────────────────────────────────────
 const Icon = {
@@ -282,28 +284,75 @@ function RBadge({ status }) {
   );
 }
 
-function Bar({ sent, failed, total }) {
+function RetryBadge({ count }) {
+  if (!count) return null;
+  const atCap = count >= MAX_RETRY_ATTEMPTS;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+        atCap ? "bg-red-50 text-red-500" : "bg-slate-100 text-slate-500"
+      }`}
+      title={
+        atCap
+          ? "Retry limit reached"
+          : `Retried ${count} time${count !== 1 ? "s" : ""}`
+      }
+    >
+      ↻ {count}/{MAX_RETRY_ATTEMPTS}
+    </span>
+  );
+}
+
+function Bar({ sent, failed, total, compact = false }) {
+  const pending = Math.max(0, total - sent - failed);
   const sp = total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : 0;
   const fp =
     total > 0 ? Math.min(100 - sp, Math.round((failed / total) * 100)) : 0;
+  const pp = Math.max(0, 100 - sp - fp);
   return (
     <div>
-      <div className="mb-1 flex justify-between text-xs text-slate-500">
-        <span>
-          {sent} delivered · {failed} failed ·{" "}
-          {Math.max(0, total - sent - failed)} pending
-        </span>
-        <span className="font-semibold text-slate-700">{sp + fp}%</span>
+      <div
+        className={`flex w-full overflow-hidden rounded-full bg-slate-100 ${compact ? "h-1.5" : "h-2.5"}`}
+      >
+        {sp > 0 && (
+          <div
+            className="h-full bg-gradient-to-r from-green-500 to-green-600 transition-all duration-700"
+            style={{ width: `${sp}%` }}
+          />
+        )}
+        {fp > 0 && (
+          <div
+            className="h-full bg-gradient-to-r from-red-400 to-red-500 transition-all duration-700"
+            style={{ width: `${fp}%` }}
+          />
+        )}
+        {pp > 0 && (
+          <div
+            className="h-full animate-pulse bg-blue-300 transition-all duration-700"
+            style={{ width: `${pp}%` }}
+          />
+        )}
       </div>
-      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-        <div
-          className="h-full bg-green-600 transition-all duration-700"
-          style={{ width: `${sp}%` }}
-        />
-        <div
-          className="h-full bg-red-400 transition-all duration-700"
-          style={{ width: `${fp}%` }}
-        />
+      <div
+        className={`mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500 ${compact ? "text-[11px]" : "text-xs"}`}
+      >
+        <span className="flex items-center gap-1">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-600" />
+          {sent} delivered
+        </span>
+        {failed > 0 && (
+          <span className="flex items-center gap-1">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />
+            {failed} failed
+          </span>
+        )}
+        {pending > 0 && (
+          <span className="flex items-center gap-1">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-400" />
+            {pending} pending
+          </span>
+        )}
+        <span className="ml-auto font-semibold text-slate-700">{sp + fp}%</span>
       </div>
     </div>
   );
@@ -333,13 +382,23 @@ function Spin({ cls = "h-4 w-4" }) {
   );
 }
 
+const STAT_ACCENTS = {
+  green: {
+    border: "border-green-200",
+    bg: "bg-green-50",
+    text: "text-green-700",
+  },
+  red: { border: "border-red-200", bg: "bg-red-50", text: "text-red-600" },
+};
+
 function Stat({ label, value, accent }) {
+  const a = STAT_ACCENTS[accent];
   return (
     <div
-      className={`rounded-xl border px-4 py-3 text-center ${accent ? "border-green-200 bg-green-50" : "border-slate-200 bg-white"}`}
+      className={`rounded-xl border px-4 py-3 text-center transition-colors ${a ? `${a.border} ${a.bg}` : "border-slate-200 bg-white"}`}
     >
       <div
-        className={`text-2xl font-bold ${accent ? "text-green-700" : "text-slate-900"}`}
+        className={`text-2xl font-bold tabular-nums ${a ? a.text : "text-slate-900"}`}
       >
         {value}
       </div>
@@ -979,6 +1038,21 @@ export default function BroadcastCampaigns() {
     return () => clearInterval(pollRef.current);
   }, [detailStatus, detailId, loadDetail]);
 
+  // Keep the sidebar accurate even for campaigns the staff isn't currently
+  // viewing. Without this, a campaign's status/progress only ever refreshed
+  // when ITS OWN detail panel was open — any other in-flight campaign could
+  // sit stale in the list (server-side values kept advancing via the
+  // scheduler's background poll, the sidebar just never re-fetched them).
+  const listPollRef = useRef(null);
+  const hasLiveCampaigns = campaigns.some((c) => POLLING.has(c.status));
+  useEffect(() => {
+    clearInterval(listPollRef.current);
+    if (hasLiveCampaigns) {
+      listPollRef.current = setInterval(loadList, POLL_MS);
+    }
+    return () => clearInterval(listPollRef.current);
+  }, [hasLiveCampaigns, loadList]);
+
   function select(id) {
     setSelectedId(id);
     setSearchParams(id ? { id } : {});
@@ -1083,11 +1157,12 @@ export default function BroadcastCampaigns() {
   }
 
   async function handleRetry() {
-    const failedRecipientCount =
-      detail.BroadcastRecipient?.filter((r) => r.status === "FAILED").length ||
-      0;
-    if (!window.confirm(`Retry ${failedRecipientCount} failed message(s)?`))
-      return;
+    const eligibleCount =
+      detail.BroadcastRecipient?.filter(
+        (r) =>
+          r.status === "FAILED" && (r.retryCount || 0) < MAX_RETRY_ATTEMPTS,
+      ).length || 0;
+    if (!window.confirm(`Retry ${eligibleCount} failed message(s)?`)) return;
     setActionLoading(true);
     setActionError(null);
     try {
@@ -1170,6 +1245,7 @@ export default function BroadcastCampaigns() {
                       sent={c.sentCount || 0}
                       failed={c.failedCount || 0}
                       total={c.audienceSize || 0}
+                      compact
                     />
                   </div>
                 )}
@@ -1237,15 +1313,19 @@ export default function BroadcastCampaigns() {
              detail.failedCount, which is a denormalized counter that can
              drift from reality. */}
           {(() => {
-            const failedRecipientCount =
-              detail.BroadcastRecipient?.filter((r) => r.status === "FAILED")
-                .length || 0;
+            const failedRecipients =
+              detail.BroadcastRecipient?.filter((r) => r.status === "FAILED") ||
+              [];
             if (
               (detail.status !== "COMPLETED" && detail.status !== "FAILED") ||
-              failedRecipientCount === 0
+              failedRecipients.length === 0
             ) {
               return null;
             }
+            const eligible = failedRecipients.filter(
+              (r) => (r.retryCount || 0) < MAX_RETRY_ATTEMPTS,
+            );
+            const atCap = failedRecipients.length - eligible.length;
             return (
               <div className="mb-5 flex flex-col gap-3 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-3">
@@ -1254,31 +1334,38 @@ export default function BroadcastCampaigns() {
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-orange-800">
-                      {failedRecipientCount} message
-                      {failedRecipientCount !== 1 ? "s" : ""} failed to send
+                      {failedRecipients.length} message
+                      {failedRecipients.length !== 1 ? "s" : ""} failed to send
                     </p>
                     <p className="mt-0.5 text-xs text-orange-600">
-                      Consent will be re-checked before resending.
+                      {eligible.length > 0
+                        ? "Consent will be re-checked before resending."
+                        : "All of these have reached the 3-retry limit and can't be retried again."}
+                      {atCap > 0 &&
+                        eligible.length > 0 &&
+                        ` ${atCap} of them ${atCap !== 1 ? "have" : "has"} already hit the retry limit and won't be retried.`}
                     </p>
                   </div>
                 </div>
-                <button
-                  onClick={handleRetry}
-                  disabled={actionLoading}
-                  className="flex w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-                >
-                  {actionLoading ? (
-                    <>
-                      <Spin /> Retrying…
-                    </>
-                  ) : (
-                    <>
-                      <Icon.Send className="h-4 w-4" />
-                      Retry {failedRecipientCount} message
-                      {failedRecipientCount !== 1 ? "s" : ""}
-                    </>
-                  )}
-                </button>
+                {eligible.length > 0 && (
+                  <button
+                    onClick={handleRetry}
+                    disabled={actionLoading}
+                    className="flex w-full shrink-0 items-center justify-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                  >
+                    {actionLoading ? (
+                      <>
+                        <Spin /> Retrying…
+                      </>
+                    ) : (
+                      <>
+                        <Icon.Send className="h-4 w-4" />
+                        Retry {eligible.length} message
+                        {eligible.length !== 1 ? "s" : ""}
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
             );
           })()}
@@ -1286,8 +1373,16 @@ export default function BroadcastCampaigns() {
           {/* stats */}
           <div className="mb-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
             <Stat label="Audience" value={detail.audienceSize ?? 0} />
-            <Stat label="Delivered" value={detail.sentCount ?? 0} accent />
-            <Stat label="Failed" value={detail.failedCount ?? 0} />
+            <Stat
+              label="Delivered"
+              value={detail.sentCount ?? 0}
+              accent="green"
+            />
+            <Stat
+              label="Failed"
+              value={detail.failedCount ?? 0}
+              accent={detail.failedCount > 0 ? "red" : undefined}
+            />
             <Stat label="Skipped" value={detail.skippedCount ?? 0} />
           </div>
 
@@ -1296,6 +1391,9 @@ export default function BroadcastCampaigns() {
             detail.status,
           ) && (
             <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4">
+              <p className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Delivery progress
+              </p>
               <Bar
                 sent={detail.sentCount || 0}
                 failed={detail.failedCount || 0}
@@ -1434,6 +1532,7 @@ export default function BroadcastCampaigns() {
                       <th className="px-4 py-2.5">Name</th>
                       <th className="px-4 py-2.5">Phone</th>
                       <th className="px-4 py-2.5">Status</th>
+                      <th className="px-4 py-2.5">Retries</th>
                       <th className="px-4 py-2.5">Note</th>
                     </tr>
                   </thead>
@@ -1449,6 +1548,13 @@ export default function BroadcastCampaigns() {
                         <td className="px-4 py-2.5">
                           <RBadge status={r.status} />
                         </td>
+                        <td className="px-4 py-2.5">
+                          {r.retryCount > 0 ? (
+                            <RetryBadge count={r.retryCount} />
+                          ) : (
+                            <span className="text-xs text-slate-300">—</span>
+                          )}
+                        </td>
                         <td className="px-4 py-2.5 text-xs text-slate-400">
                           {r.skipReason ||
                             r.errorMessage ||
@@ -1463,9 +1569,9 @@ export default function BroadcastCampaigns() {
                 {detail.BroadcastRecipient.map((r) => (
                   <div
                     key={r.id}
-                    className="flex items-center justify-between px-4 py-3"
+                    className="flex items-center justify-between gap-3 px-4 py-3"
                   >
-                    <div>
+                    <div className="min-w-0">
                       <p className="text-sm font-semibold text-slate-800">
                         {r.firstName || "—"}
                       </p>
@@ -1473,12 +1579,15 @@ export default function BroadcastCampaigns() {
                         {r.phone}
                       </p>
                       {(r.skipReason || r.errorMessage || r.sentAt) && (
-                        <p className="mt-0.5 text-xs text-slate-400">
+                        <p className="mt-0.5 truncate text-xs text-slate-400">
                           {r.skipReason || r.errorMessage || fmt(r.sentAt)}
                         </p>
                       )}
                     </div>
-                    <RBadge status={r.status} />
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <RBadge status={r.status} />
+                      <RetryBadge count={r.retryCount} />
+                    </div>
                   </div>
                 ))}
               </div>
