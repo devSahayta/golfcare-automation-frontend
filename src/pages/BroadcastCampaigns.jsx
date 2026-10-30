@@ -8,6 +8,17 @@
 //   - Template editor for DRAFT campaigns (Header / Body / Footer / Buttons)
 //   - Live WhatsApp mockup preview
 //   - PATCH /api/broadcast-campaigns/:id/template to persist template component changes
+//
+// v3 additions (this revision):
+//   - Manual retry for failed recipients, with per-recipient retry-count tracking
+//     (capped at MAX_RETRY_ATTEMPTS, must match broadcastFanOutService.js on the backend)
+//   - Sidebar rows no longer show a mini progress bar — a one-line, status-aware
+//     summary (icon + text) reads faster at list-item size than a tiny bar does.
+//     The full segmented bar stays in the detail panel, where there's room for it.
+//   - Recipients list is paginated client-side (a campaign can have up to 200
+//     recipients) — campaign list itself is not paginated, just fetched in full.
+//   - Sidebar now polls independently of whichever campaign's detail is open, so a
+//     second in-flight campaign can't sit stale in the list while you're viewing another.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -119,8 +130,38 @@ const RSTATUS = {
 const POLLING = new Set(["SUBMITTED", "SCHEDULED", "PENDING_SCHEDULE"]);
 const POLL_MS = 6000;
 const DONE = new Set(["COMPLETED", "CANCELLED", "FAILED", "REJECTED"]);
+
 // Must match broadcastFanOutService.js's MAX_RETRY_ATTEMPTS on the backend.
 const MAX_RETRY_ATTEMPTS = 3;
+
+// How many recipients to show per page in the Recipients list.
+const RECIPIENTS_PAGE_SIZE = 10;
+
+// Status groups shown as filter pills above the campaign list.
+const LIST_FILTERS = [
+  { id: "all", label: "All", match: () => true },
+  {
+    id: "draft",
+    label: "Draft",
+    match: (c) => c.status === "DRAFT" || c.status === "READY",
+  },
+  {
+    id: "live",
+    label: "Live",
+    match: (c) => c.status === "SUBMITTED" || c.status === "SCHEDULED",
+  },
+  {
+    id: "scheduled",
+    label: "Scheduled",
+    match: (c) => c.status === "PENDING_SCHEDULE",
+  },
+  {
+    id: "done",
+    label: "Done",
+    match: (c) =>
+      ["COMPLETED", "FAILED", "REJECTED", "CANCELLED"].includes(c.status),
+  },
+];
 
 // ─── icons ────────────────────────────────────────────────────────────────────
 const Icon = {
@@ -248,6 +289,50 @@ const Icon = {
       />
     </svg>
   ),
+  SkipForward: (p) => (
+    <svg
+      {...p}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4 5l6 5-6 5V5z"
+        fill="currentColor"
+        stroke="none"
+      />
+      <path strokeLinecap="round" d="M14.5 5v10" />
+    </svg>
+  ),
+  ChevronLeft: (p) => (
+    <svg
+      {...p}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M12.5 5L7.5 10l5 5"
+      />
+    </svg>
+  ),
+  ChevronRight: (p) => (
+    <svg
+      {...p}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 5l5 5-5 5" />
+    </svg>
+  ),
 };
 
 // ─── shared components ────────────────────────────────────────────────────────
@@ -303,7 +388,89 @@ function RetryBadge({ count }) {
   );
 }
 
-function Bar({ sent, failed, total, compact = false }) {
+// One-line, status-aware summary used in the sidebar list in place of a
+// progress bar — faster to scan at list-item size than a tiny bar, and
+// communicates more (why it's in this state, not just a percentage).
+function listSummary(c) {
+  const total = c.audienceSize || 0;
+  const sent = c.sentCount || 0;
+  const failed = c.failedCount || 0;
+
+  switch (c.status) {
+    case "DRAFT":
+      return { text: "Not submitted yet", cls: "text-slate-400 italic" };
+    case "SUBMITTED":
+      return {
+        text: "Waiting for Meta approval",
+        cls: "text-amber-600 font-medium",
+        icon: "clock",
+      };
+    case "READY":
+      return {
+        text: "Approved — ready to send",
+        cls: "text-green-700 font-medium",
+        icon: "check",
+      };
+    case "PENDING_SCHEDULE":
+      return {
+        text: c.scheduledFor
+          ? `Sends ${fmt(c.scheduledFor)}`
+          : "Scheduled to send",
+        cls: "text-slate-600 font-medium",
+        icon: "clock",
+      };
+    case "SCHEDULED":
+      return {
+        text: `${sent} of ${total} delivered`,
+        cls: "text-blue-600 font-medium",
+        icon: "pulse",
+      };
+    case "COMPLETED":
+      return failed > 0
+        ? {
+            text: `${failed} of ${total} failed · retry available`,
+            cls: "text-orange-600 font-semibold",
+            icon: "warn",
+          }
+        : {
+            text: "All delivered",
+            cls: "text-green-700 font-medium",
+            icon: "check",
+          };
+    case "FAILED":
+      return {
+        text: failed > 0 ? `${failed} of ${total} failed` : "Failed to send",
+        cls: "text-red-600 font-semibold",
+        icon: "warn",
+      };
+    case "REJECTED":
+      return { text: "Template rejected by Meta", cls: "text-slate-400" };
+    case "CANCELLED":
+      return { text: "Cancelled", cls: "text-slate-400" };
+    default:
+      return null;
+  }
+}
+
+function ListSummaryLine({ campaign }) {
+  const s = listSummary(campaign);
+  if (!s) return null;
+  return (
+    <div className={`mt-1.5 flex items-center gap-1.5 text-xs ${s.cls}`}>
+      {s.icon === "check" && <Icon.Check className="h-3.5 w-3.5 shrink-0" />}
+      {s.icon === "warn" && <Icon.Warn className="h-3.5 w-3.5 shrink-0" />}
+      {s.icon === "clock" && <Icon.Clock className="h-3.5 w-3.5 shrink-0" />}
+      {s.icon === "pulse" && (
+        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500" />
+      )}
+      <span className="truncate">{s.text}</span>
+    </div>
+  );
+}
+
+// Delivery progress bar — detail panel only. Segmented (delivered / failed /
+// pending) with a legend row underneath, since there's room for it there.
+function Bar({ sent, failed, total }) {
   const pending = Math.max(0, total - sent - failed);
   const sp = total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : 0;
   const fp =
@@ -311,9 +478,7 @@ function Bar({ sent, failed, total, compact = false }) {
   const pp = Math.max(0, 100 - sp - fp);
   return (
     <div>
-      <div
-        className={`flex w-full overflow-hidden rounded-full bg-slate-100 ${compact ? "h-1.5" : "h-2.5"}`}
-      >
+      <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
         {sp > 0 && (
           <div
             className="h-full bg-gradient-to-r from-green-500 to-green-600 transition-all duration-700"
@@ -333,26 +498,26 @@ function Bar({ sent, failed, total, compact = false }) {
           />
         )}
       </div>
-      <div
-        className={`mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500 ${compact ? "text-[11px]" : "text-xs"}`}
-      >
-        <span className="flex items-center gap-1">
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-600" />
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 shrink-0 rounded-full bg-green-600" />
           {sent} delivered
         </span>
         {failed > 0 && (
-          <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
             {failed} failed
           </span>
         )}
         {pending > 0 && (
-          <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-400" />
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 shrink-0 rounded-full bg-blue-300" />
             {pending} pending
           </span>
         )}
-        <span className="ml-auto font-semibold text-slate-700">{sp + fp}%</span>
+        <span className="ml-auto text-sm font-bold text-slate-800">
+          {sp + fp}%
+        </span>
       </div>
     </div>
   );
@@ -387,22 +552,41 @@ const STAT_ACCENTS = {
     border: "border-green-200",
     bg: "bg-green-50",
     text: "text-green-700",
+    iconBg: "bg-green-100",
+    iconText: "text-green-600",
   },
-  red: { border: "border-red-200", bg: "bg-red-50", text: "text-red-600" },
+  red: {
+    border: "border-red-200",
+    bg: "bg-red-50",
+    text: "text-red-600",
+    iconBg: "bg-red-100",
+    iconText: "text-red-500",
+  },
 };
 
-function Stat({ label, value, accent }) {
+function Stat({ label, value, accent, icon }) {
   const a = STAT_ACCENTS[accent];
   return (
     <div
-      className={`rounded-xl border px-4 py-3 text-center transition-colors ${a ? `${a.border} ${a.bg}` : "border-slate-200 bg-white"}`}
+      className={`rounded-2xl border px-4 py-3.5 text-center transition-colors ${a ? `${a.border} ${a.bg}` : "border-slate-200 bg-white"}`}
     >
+      {icon && (
+        <div
+          className={`mx-auto mb-2 flex h-7 w-7 items-center justify-center rounded-lg ${a ? a.iconBg : "bg-slate-100"}`}
+        >
+          {icon({
+            className: `h-3.5 w-3.5 ${a ? a.iconText : "text-slate-500"}`,
+          })}
+        </div>
+      )}
       <div
-        className={`text-2xl font-bold tabular-nums ${a ? a.text : "text-slate-900"}`}
+        className={`text-2xl font-extrabold tabular-nums ${a ? a.text : "text-slate-900"}`}
       >
         {value}
       </div>
-      <div className="mt-0.5 text-xs font-medium text-slate-400">{label}</div>
+      <div className="mt-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+        {label}
+      </div>
     </div>
   );
 }
@@ -416,7 +600,7 @@ function Banner({
 }) {
   if (status === "SUBMITTED")
     return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+      <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3.5">
         <Icon.Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
         <div>
           <p className="text-sm font-semibold text-amber-800">
@@ -430,7 +614,7 @@ function Banner({
     );
   if (status === "SCHEDULED")
     return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
+      <div className="mb-4 flex items-start gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3.5">
         <Icon.Send className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
         <div>
           <p className="text-sm font-semibold text-blue-800">
@@ -444,7 +628,7 @@ function Banner({
     );
   if (status === "PENDING_SCHEDULE")
     return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3">
+      <div className="mb-4 flex items-start gap-3 rounded-2xl border border-green-200 bg-green-50 px-4 py-3.5">
         <Icon.Clock className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
         <div>
           <p className="text-sm font-semibold text-green-800">
@@ -461,7 +645,7 @@ function Banner({
     );
   if (status === "COMPLETED")
     return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3">
+      <div className="mb-4 flex items-start gap-3 rounded-2xl border border-green-200 bg-green-50 px-4 py-3.5">
         <Icon.Check className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
         <div>
           <p className="text-sm font-semibold text-green-800">
@@ -477,7 +661,7 @@ function Banner({
     );
   if (status === "REJECTED")
     return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+      <div className="mb-4 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3.5">
         <Icon.X className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
         <div>
           <p className="text-sm font-semibold text-red-800">
@@ -491,7 +675,7 @@ function Banner({
     );
   if (status === "CANCELLED")
     return (
-      <div className="mb-5 flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+      <div className="mb-4 flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3.5">
         <Icon.X className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
         <p className="text-sm text-slate-600">This campaign was cancelled.</p>
       </div>
@@ -677,7 +861,7 @@ function TemplateEditor({ campaign, onSaved }) {
   ];
 
   return (
-    <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
+    <div className="mb-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
       {/* Card header */}
       <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
         <div className="flex items-center gap-2">
@@ -695,12 +879,12 @@ function TemplateEditor({ campaign, onSaved }) {
         {/* ── Left: editor ── */}
         <div className="flex flex-col flex-1 min-w-0 border-b border-slate-100 lg:border-b-0 lg:border-r lg:border-slate-100">
           {/* Section tabs */}
-          <div className="flex border-b border-slate-100 bg-slate-50/60">
+          <div className="flex overflow-x-auto border-b border-slate-100 bg-slate-50/60">
             {TABS.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`px-5 py-3 text-xs font-semibold transition-colors ${
+                className={`shrink-0 px-5 py-3 text-xs font-semibold transition-colors ${
                   tab === t.id
                     ? "border-b-2 border-green-600 bg-white text-green-700"
                     : "text-slate-400 hover:text-slate-600"
@@ -913,7 +1097,7 @@ function TemplateEditor({ campaign, onSaved }) {
           </div>
 
           {/* Save bar — pinned to bottom of editor */}
-          <div className="border-t border-slate-100 bg-slate-50/60 px-5 py-3.5 flex items-center gap-3">
+          <div className="border-t border-slate-100 bg-slate-50/60 px-5 py-3.5 flex flex-wrap items-center gap-3">
             {saveError && (
               <div className="flex-1 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
                 <Icon.Warn className="h-3.5 w-3.5 shrink-0 text-red-500" />
@@ -964,6 +1148,37 @@ function TemplateEditor({ campaign, onSaved }) {
   );
 }
 
+// ─── Recipients pagination ──────────────────────────────────────────────────
+function Pagination({ page, totalPages, onPrev, onNext, rangeLabel }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 sm:px-5">
+      <span className="text-xs text-slate-400">{rangeLabel}</span>
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={onPrev}
+          disabled={page <= 1}
+          className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Previous page"
+        >
+          <Icon.ChevronLeft className="h-3.5 w-3.5" />
+        </button>
+        <span className="min-w-[64px] text-center text-xs font-semibold text-slate-600">
+          Page {page} / {totalPages}
+        </span>
+        <button
+          onClick={onNext}
+          disabled={page >= totalPages}
+          className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Next page"
+        >
+          <Icon.ChevronRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── main ─────────────────────────────────────────────────────────────────────
 
 export default function BroadcastCampaigns() {
@@ -985,7 +1200,11 @@ export default function BroadcastCampaigns() {
   const [mobileView, setMobileView] = useState(
     searchParams.get("id") ? "detail" : "list",
   );
+  const [recipientPage, setRecipientPage] = useState(1);
+  const [listFilter, setListFilter] = useState("all");
+  const [search, setSearch] = useState("");
   const pollRef = useRef(null);
+  const listPollRef = useRef(null);
 
   const loadList = useCallback(async () => {
     try {
@@ -1030,6 +1249,14 @@ export default function BroadcastCampaigns() {
 
   const detailId = detail?.id;
   const detailStatus = detail?.status;
+
+  // Reset to page 1 of the recipients list whenever a DIFFERENT campaign is
+  // opened — but not on every poll tick of the same campaign, so the page
+  // doesn't jump out from under the staff member while they're reading it.
+  useEffect(() => {
+    setRecipientPage(1);
+  }, [detailId]);
+
   useEffect(() => {
     clearInterval(pollRef.current);
     if (detailId && POLLING.has(detailStatus)) {
@@ -1043,7 +1270,6 @@ export default function BroadcastCampaigns() {
   // when ITS OWN detail panel was open — any other in-flight campaign could
   // sit stale in the list (server-side values kept advancing via the
   // scheduler's background poll, the sidebar just never re-fetched them).
-  const listPollRef = useRef(null);
   const hasLiveCampaigns = campaigns.some((c) => POLLING.has(c.status));
   useEffect(() => {
     clearInterval(listPollRef.current);
@@ -1176,22 +1402,85 @@ export default function BroadcastCampaigns() {
     }
   }
 
+  // ─── recipients pagination (client-side slice of what getCampaign returned) ──
+  const allRecipients = detail?.BroadcastRecipient || [];
+  const recipientTotalPages = Math.max(
+    1,
+    Math.ceil(allRecipients.length / RECIPIENTS_PAGE_SIZE),
+  );
+  const clampedRecipientPage = Math.min(recipientPage, recipientTotalPages);
+  const pagedRecipients = allRecipients.slice(
+    (clampedRecipientPage - 1) * RECIPIENTS_PAGE_SIZE,
+    clampedRecipientPage * RECIPIENTS_PAGE_SIZE,
+  );
+  const recipientRangeLabel =
+    allRecipients.length === 0
+      ? "No recipients"
+      : `Showing ${(clampedRecipientPage - 1) * RECIPIENTS_PAGE_SIZE + 1}–${Math.min(clampedRecipientPage * RECIPIENTS_PAGE_SIZE, allRecipients.length)} of ${allRecipients.length}`;
+
+  // ─── recipients pagination handled above; list filtering below ─────────────
+  const activeFilterDef =
+    LIST_FILTERS.find((f) => f.id === listFilter) ?? LIST_FILTERS[0];
+  const searchedCampaigns = search.trim()
+    ? campaigns.filter((c) =>
+        c.name?.toLowerCase().includes(search.trim().toLowerCase()),
+      )
+    : campaigns;
+  const filteredCampaigns = searchedCampaigns.filter(activeFilterDef.match);
+
   // ─── list panel ─────────────────────────────────────────────────────────────
   const ListPanel = (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-700">
+      <div className="shrink-0 border-b border-slate-200 bg-white px-4 pt-4 pb-3 sm:px-5">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-green-700 shadow-sm">
             <MegaphoneIcon />
           </div>
-          <div>
-            <h1 className="text-base font-semibold text-slate-900 sm:text-lg">
-              Broadcast Campaigns
-            </h1>
-            <p className="text-xs text-slate-400 sm:text-sm">
-              WhatsApp broadcast messages
-            </p>
-          </div>
+          <h1 className="truncate text-base font-semibold text-slate-900 sm:text-lg">
+            Broadcast Campaigns
+          </h1>
+        </div>
+
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="#94a3b8"
+            strokeWidth="1.75"
+            className="shrink-0"
+          >
+            <circle cx="9" cy="9" r="6.25" />
+            <path strokeLinecap="round" d="M14 14l3.5 3.5" />
+          </svg>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search campaigns…"
+            className="w-full bg-transparent text-xs text-slate-700 placeholder:text-slate-400 focus:outline-none"
+          />
+        </div>
+
+        <div className="mt-3 -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5">
+          {LIST_FILTERS.map((f) => {
+            const count = searchedCampaigns.filter(f.match).length;
+            const isActive = listFilter === f.id;
+            return (
+              <button
+                key={f.id}
+                onClick={() => setListFilter(f.id)}
+                className={`shrink-0 rounded-full px-3 py-1.5 text-[11.5px] font-semibold transition-colors ${
+                  isActive
+                    ? "bg-green-700 text-white"
+                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                }`}
+              >
+                {f.label} · {count}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -1212,16 +1501,34 @@ export default function BroadcastCampaigns() {
             </p>
           </div>
         </div>
+      ) : filteredCampaigns.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
+          <p className="text-sm font-semibold text-slate-500">
+            No campaigns match
+          </p>
+          <p className="text-xs text-slate-400">
+            Try a different filter{search.trim() ? " or search term" : ""}.
+          </p>
+          <button
+            onClick={() => {
+              setListFilter("all");
+              setSearch("");
+            }}
+            className="mt-1 text-xs font-semibold text-green-700 hover:underline"
+          >
+            Clear filters
+          </button>
+        </div>
       ) : (
         <div className="flex-1 overflow-y-auto">
-          {campaigns.map((c) => {
+          {filteredCampaigns.map((c) => {
             const active = selectedId === c.id;
             return (
               <button
                 key={c.id}
                 onClick={() => select(c.id)}
                 className={`group w-full border-b border-slate-100 px-4 py-3.5 text-left transition-colors last:border-b-0 sm:px-5
-                  ${active ? "border-l-[3px] border-l-green-700 bg-green-50" : "hover:bg-slate-50"}`}
+                  ${active ? "border-l-[3px] border-l-green-700 bg-green-50" : "border-l-[3px] border-l-transparent hover:bg-slate-50"}`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <span
@@ -1237,18 +1544,7 @@ export default function BroadcastCampaigns() {
                   <span className="mx-1 text-slate-200">|</span>
                   <span>{fmtShort(c.createdAt)}</span>
                 </div>
-                {["SCHEDULED", "COMPLETED", "PENDING_SCHEDULE"].includes(
-                  c.status,
-                ) && (
-                  <div className="mt-2.5">
-                    <Bar
-                      sent={c.sentCount || 0}
-                      failed={c.failedCount || 0}
-                      total={c.audienceSize || 0}
-                      compact
-                    />
-                  </div>
-                )}
+                <ListSummaryLine campaign={c} />
               </button>
             );
           })}
@@ -1311,7 +1607,7 @@ export default function BroadcastCampaigns() {
              away, without scrolling past stats/preview/recipients.
              Derived from the actual recipient rows rather than
              detail.failedCount, which is a denormalized counter that can
-             drift from reality. */}
+             drift from reality. Accounts for per-recipient retry caps. */}
           {(() => {
             const failedRecipients =
               detail.BroadcastRecipient?.filter((r) => r.status === "FAILED") ||
@@ -1327,10 +1623,10 @@ export default function BroadcastCampaigns() {
             );
             const atCap = failedRecipients.length - eligible.length;
             return (
-              <div className="mb-5 flex flex-col gap-3 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-orange-200 bg-gradient-to-br from-orange-50 to-amber-50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-orange-100">
-                    <Icon.Warn className="h-4 w-4 text-orange-500" />
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-orange-100">
+                    <Icon.Warn className="h-4.5 w-4.5 text-orange-500" />
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-orange-800">
@@ -1371,27 +1667,37 @@ export default function BroadcastCampaigns() {
           })()}
 
           {/* stats */}
-          <div className="mb-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-            <Stat label="Audience" value={detail.audienceSize ?? 0} />
+          <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            <Stat
+              label="Audience"
+              value={detail.audienceSize ?? 0}
+              icon={Icon.People}
+            />
             <Stat
               label="Delivered"
               value={detail.sentCount ?? 0}
               accent="green"
+              icon={Icon.Check}
             />
             <Stat
               label="Failed"
               value={detail.failedCount ?? 0}
               accent={detail.failedCount > 0 ? "red" : undefined}
+              icon={Icon.Warn}
             />
-            <Stat label="Skipped" value={detail.skippedCount ?? 0} />
+            <Stat
+              label="Skipped"
+              value={detail.skippedCount ?? 0}
+              icon={Icon.SkipForward}
+            />
           </div>
 
           {/* progress bar */}
           {["SCHEDULED", "COMPLETED", "PENDING_SCHEDULE"].includes(
             detail.status,
           ) && (
-            <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4">
-              <p className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
                 Delivery progress
               </p>
               <Bar
@@ -1414,14 +1720,14 @@ export default function BroadcastCampaigns() {
 
           {/* Message preview (non-DRAFT) */}
           {detail.status !== "DRAFT" && (
-            <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
+            <div className="mb-4 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
               {/* Card header */}
-              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
                 <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                   Message Preview
                 </span>
                 {detail.templateName && (
-                  <code className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                  <code className="max-w-full truncate rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
                     {detail.templateName}
                   </code>
                 )}
@@ -1515,21 +1821,21 @@ export default function BroadcastCampaigns() {
           )}
 
           {/* recipients */}
-          {detail.BroadcastRecipient?.length > 0 && (
-            <div className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
-              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
+          {allRecipients.length > 0 && (
+            <div className="mb-4 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5 sm:px-5">
                 <span className="text-xs font-semibold text-slate-400">
                   Recipients
                 </span>
                 <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
-                  {detail.BroadcastRecipient.length}
+                  {allRecipients.length}
                 </span>
               </div>
               <div className="hidden sm:block overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs font-semibold text-slate-400">
-                      <th className="px-4 py-2.5">Name</th>
+                      <th className="px-4 py-2.5 sm:px-5">Name</th>
                       <th className="px-4 py-2.5">Phone</th>
                       <th className="px-4 py-2.5">Status</th>
                       <th className="px-4 py-2.5">Retries</th>
@@ -1537,9 +1843,9 @@ export default function BroadcastCampaigns() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {detail.BroadcastRecipient.map((r) => (
+                    {pagedRecipients.map((r) => (
                       <tr key={r.id} className="hover:bg-slate-50">
-                        <td className="px-4 py-2.5 font-medium text-slate-800">
+                        <td className="px-4 py-2.5 font-medium text-slate-800 sm:px-5">
                           {r.firstName || "—"}
                         </td>
                         <td className="px-4 py-2.5 font-mono text-xs text-slate-500">
@@ -1566,7 +1872,7 @@ export default function BroadcastCampaigns() {
                 </table>
               </div>
               <div className="divide-y divide-slate-100 sm:hidden">
-                {detail.BroadcastRecipient.map((r) => (
+                {pagedRecipients.map((r) => (
                   <div
                     key={r.id}
                     className="flex items-center justify-between gap-3 px-4 py-3"
@@ -1591,12 +1897,21 @@ export default function BroadcastCampaigns() {
                   </div>
                 ))}
               </div>
+              <Pagination
+                page={clampedRecipientPage}
+                totalPages={recipientTotalPages}
+                rangeLabel={recipientRangeLabel}
+                onPrev={() => setRecipientPage((p) => Math.max(1, p - 1))}
+                onNext={() =>
+                  setRecipientPage((p) => Math.min(recipientTotalPages, p + 1))
+                }
+              />
             </div>
           )}
 
           {/* action error */}
           {actionError && (
-            <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <div className="mb-4 flex items-start gap-2.5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               <Icon.Warn className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
               {actionError}
             </div>
@@ -1681,7 +1996,7 @@ export default function BroadcastCampaigns() {
 
                   {/* Scheduler panel — slides open below the buttons */}
                   {showScheduler && (
-                    <div className="overflow-hidden rounded-xl border border-green-200 bg-green-50">
+                    <div className="overflow-hidden rounded-2xl border border-green-200 bg-green-50">
                       {/* Header */}
                       <div className="flex items-center gap-2.5 border-b border-green-200 px-4 py-3">
                         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-green-700">
