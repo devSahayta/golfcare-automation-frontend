@@ -2020,13 +2020,57 @@ function ContentPickerWrapper({ data, onImageGenerated }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Suggestion-chip icons — defined locally (rather than pulled from ./icons)
+// so new suggestions don't depend on icons that may not exist there yet.
+// Same 20x20 currentColor-fill convention as the rest of the icon set.
+// ─────────────────────────────────────────────────────────────────────────────
+function StockAlertIcon(props) {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" {...props}>
+      <path d="M10 2a1 1 0 01.894.553l7 14A1 1 0 0117 18H3a1 1 0 01-.894-1.447l7-14A1 1 0 0110 2zm0 5a.75.75 0 00-.75.75v3.5a.75.75 0 001.5 0v-3.5A.75.75 0 0010 7zm0 7a.9.9 0 100 1.8.9.9 0 000-1.8z" />
+    </svg>
+  );
+}
+function OrdersIcon(props) {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" {...props}>
+      <path d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zM4 8h12v8H4V8z" />
+    </svg>
+  );
+}
+function CampaignPulseIcon(props) {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" {...props}>
+      <path d="M3.105 3.105a.75.75 0 01.814-.162l13.5 5.625a.75.75 0 010 1.364l-13.5 5.625a.75.75 0 01-1.04-.898L4.96 10 2.879 4.341a.75.75 0 01.226-.736z" />
+    </svg>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Suggestion chips
 // ─────────────────────────────────────────────────────────────────────────────
 const SUGGESTIONS = [
   { icon: BarChartIcon, label: "This week's top sellers" },
   { icon: TruckIcon, label: "Suppliers falling behind" },
   { icon: UserCheckIcon, label: "Customers due a follow-up" },
+  { icon: StockAlertIcon, label: "Products running low on stock" },
+  { icon: OrdersIcon, label: "Orders pending fulfillment" },
+  { icon: CampaignPulseIcon, label: "How are my campaigns performing?" },
 ];
+
+// Greeting shown the moment the widget opens, before any message is sent.
+// Spells out what Insights can actually help with so a first-time user
+// isn't left guessing what to type. Rendered through MarkdownLite, so
+// "**bold**" and "- bullet" lines both work here.
+const GREETING_TEXT =
+  "👋 **Hi, I'm Insights** — I can look across your live store data and answer in plain English.\n\n" +
+  "Ask me about:\n" +
+  "- **Products** — stock levels, pricing, margins\n" +
+  "- **Orders** — status, pending fulfillment\n" +
+  "- **Customers** — who's due a follow-up, purchase history\n" +
+  "- **Suppliers** — delivery delays, catalog imports\n" +
+  "- **Campaigns** — draft and send WhatsApp broadcasts, check performance\n\n" +
+  "Tap a suggestion below, or just type your question.";
 
 const ERROR_REPLY =
   "Something went wrong reaching Insights. Try again in a moment.";
@@ -2340,10 +2384,7 @@ export default function InsightsWidget() {
               @keyframes spin { to { transform: rotate(360deg); } }
             `}</style>
 
-            <AssistantBubble
-              text="Hi, I'm Insights. Ask me anything about your customers, products, suppliers, or orders."
-              time="Just now"
-            />
+            <AssistantBubble text={GREETING_TEXT} time="Just now" />
 
             {messages.length === 0 && (
               <div>
@@ -2359,7 +2400,7 @@ export default function InsightsWidget() {
                       className="flex w-full items-center gap-2.5 rounded-xl border border-gray-200 bg-white px-2.5 py-2 text-left hover:border-fairway-200 hover:bg-fairway-50/40 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-fairway-50 text-fairway-700">
-                        <s.icon />
+                        <s.icon className="h-3.5 w-3.5" />
                       </span>
                       <span className="flex-1 text-[13px] text-gray-800">
                         {s.label}
