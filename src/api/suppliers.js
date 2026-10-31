@@ -18,3 +18,6 @@ export const deleteSupplierPermanently = (id, { force } = {}) =>
   api.delete(`/api/suppliers/${id}/permanent`, {
     params: force ? { force: "true" } : undefined,
   });
+
+export const regeneratePortalToken = (id) =>
+  api.post(`/api/suppliers/${id}/portal-token/regenerate`);

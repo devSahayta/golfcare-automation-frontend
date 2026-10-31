@@ -20,6 +20,7 @@ import AgentUsage from "./pages/AgentUsage";
 import Campaigns from "./pages/Campaigns";
 import BroadcastCampaigns from "./pages/BroadcastCampaigns";
 import Settings from "./pages/Settings";
+import SupplierCheckin from "./pages/SupplierCheckin";
 import NotFound from "./pages/NotFound";
 import { registerTokenGetter } from "./api/apiClient";
 import { addUserToBackend } from "./api/users";
@@ -90,6 +91,7 @@ export default function App() {
       <Toaster position="top-right" />
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/supplier-checkin/:token" element={<SupplierCheckin />} />
         <Route
           element={
             <ProtectedRoute>

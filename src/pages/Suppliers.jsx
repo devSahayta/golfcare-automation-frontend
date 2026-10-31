@@ -9,6 +9,7 @@ import {
   updateSupplier,
   deactivateSupplier,
   deleteSupplierPermanently,
+  regeneratePortalToken,
 } from "../api/suppliers";
 import PageHeader from "../components/ui/PageHeader";
 import DataTable from "../components/ui/DataTable";
@@ -476,6 +477,30 @@ export default function Suppliers() {
     }
   }
 
+  async function handleRegenerateLink() {
+    if (!detail) return;
+    if (!window.confirm("Regenerate this supplier's check-in link? The old link will stop working.")) return;
+
+    setSaving(true);
+    try {
+      const res = await regeneratePortalToken(detail.id);
+      setDetail((d) => ({ ...d, portalToken: res.data.supplier.portalToken }));
+      toast.success("Check-in link regenerated.");
+    } catch (err) {
+      toast.error(err.response?.data?.error || "Couldn't regenerate the link. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function copyPortalLink(portalToken) {
+    const url = `${window.location.origin}/supplier-checkin/${portalToken}`;
+    navigator.clipboard
+      .writeText(url)
+      .then(() => toast.success("Link copied."))
+      .catch(() => toast.error("Couldn't copy — select and copy manually."));
+  }
+
   async function handleDeletePermanent() {
     if (!detail) return;
     if (!window.confirm(`Permanently delete ${detail.name}? This cannot be undone.`)) return;
@@ -632,6 +657,30 @@ export default function Suppliers() {
                 Delete permanently
               </button>
             </div>
+
+            {detail.portalToken && (
+              <div className="rounded-lg border border-gray-100 p-3">
+                <p className="text-xs text-gray-400">Stock check-in link</p>
+                <p className="mt-1 truncate text-sm text-gray-600" title={`${window.location.origin}/supplier-checkin/${detail.portalToken}`}>
+                  {`${window.location.origin}/supplier-checkin/${detail.portalToken}`}
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    onClick={() => copyPortalLink(detail.portalToken)}
+                    className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                  >
+                    Copy link
+                  </button>
+                  <button
+                    onClick={handleRegenerateLink}
+                    disabled={saving}
+                    className="rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Regenerate
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-lg border border-gray-100 p-3">
