@@ -14,3 +14,9 @@ export const confirmAllItems = (token, { status, leadTimeDays } = {}) =>
 
 export const confirmItem = (token, { supplierProductId, status, leadTimeDays } = {}) =>
   api.post(`/api/supplier-portal/${token}/confirm-item`, { supplierProductId, status, leadTimeDays });
+
+export const uploadItemImage = (token, supplierProductId, file) => {
+  const form = new FormData();
+  form.append("image", file);
+  return api.post(`/api/supplier-portal/${token}/items/${supplierProductId}/image`, form);
+};

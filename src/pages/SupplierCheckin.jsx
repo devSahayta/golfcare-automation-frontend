@@ -13,30 +13,70 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import toast from "react-hot-toast";
-import { fetchPortalItems, confirmAllItems, confirmItem as confirmItemApi } from "../api/supplierPortal";
+import {
+  fetchPortalItems,
+  confirmAllItems,
+  confirmItem as confirmItemApi,
+  uploadItemImage as uploadItemImageApi,
+} from "../api/supplierPortal";
 
-function ItemImage({ src }) {
+// uploadState: undefined (idle) | "uploading" | "pending" — only relevant
+// when the product has no image at all; the upload gate itself is
+// enforced server-side against Product.imageUrls regardless of what this
+// shows, so this is purely a display concern.
+function ItemImage({ src, uploadState, onUploadImage }) {
   const [failed, setFailed] = useState(false);
-  if (!src || failed) {
-    return <div className="h-12 w-12 shrink-0 rounded-lg bg-gray-100" />;
+
+  if (src) {
+    if (failed) return <div className="h-12 w-12 shrink-0 rounded-lg bg-gray-100" />;
+    return (
+      <img
+        src={src}
+        alt=""
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="h-12 w-12 shrink-0 rounded-lg border border-gray-100 object-cover"
+      />
+    );
   }
+
+  if (uploadState === "uploading") {
+    return <div className="h-12 w-12 shrink-0 animate-pulse rounded-lg bg-gray-200" />;
+  }
+
+  if (uploadState === "pending") {
+    return (
+      <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-lg bg-amber-50 p-0.5 text-center">
+        <span className="text-[8px] font-medium leading-tight text-amber-700">Pending review</span>
+      </div>
+    );
+  }
+
   return (
-    <img
-      src={src}
-      alt=""
-      loading="lazy"
-      onError={() => setFailed(true)}
-      className="h-12 w-12 shrink-0 rounded-lg border border-gray-100 object-cover"
-    />
+    <label className="flex h-12 w-12 shrink-0 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-50 text-gray-400 hover:border-fairway-300 hover:text-fairway-600">
+      <span className="text-base leading-none">+</span>
+      <span className="text-[8px] leading-tight">Add photo</span>
+      <input
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) onUploadImage(file);
+        }}
+      />
+    </label>
   );
 }
 
-function ItemRow({ item, confirmedStatus, onConfirm, busy }) {
+function ItemRow({ item, confirmedStatus, onConfirm, busy, imageUploadState, onUploadImage }) {
   const confirmed = confirmedStatus != null;
 
   return (
     <li className="flex items-center gap-3 border-b border-gray-100 px-4 py-3 last:border-0">
-      <ItemImage src={item.imageUrl} />
+      <ItemImage src={item.imageUrl} uploadState={imageUploadState} onUploadImage={onUploadImage} />
 
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-gray-900">{item.productTitle}</p>
@@ -91,6 +131,9 @@ export default function SupplierCheckin() {
   // still-in-flight item's buttons.)
   const [busyIds, setBusyIds] = useState(() => new Set());
   const [markingAll, setMarkingAll] = useState(false);
+  // supplierProductId -> "uploading" | "pending" — a missing-image photo
+  // submission in progress or already sent for staff review this session.
+  const [imageUploads, setImageUploads] = useState({});
 
   useEffect(() => {
     fetchPortalItems(token)
@@ -151,6 +194,34 @@ export default function SupplierCheckin() {
     }
   }
 
+  async function handleUploadImage(item, file) {
+    setImageUploads((u) => ({ ...u, [item.supplierProductId]: "uploading" }));
+    try {
+      await uploadItemImageApi(token, item.supplierProductId, file);
+      setImageUploads((u) => ({ ...u, [item.supplierProductId]: "pending" }));
+      toast.success("Photo sent for review.");
+    } catch (err) {
+      const code = err?.response?.data?.error;
+      if (code === "submission_already_pending") {
+        setImageUploads((u) => ({ ...u, [item.supplierProductId]: "pending" }));
+        toast("A photo for this product is already pending review.");
+        return;
+      }
+      setImageUploads((u) => {
+        const next = { ...u };
+        delete next[item.supplierProductId];
+        return next;
+      });
+      if (code === "product_already_has_image") {
+        toast.error("This product already has an image now.");
+      } else if (err?.response?.status === 400) {
+        toast.error(err.response.data?.error || "That file can't be used — try a JPEG, PNG, or WebP under 8MB.");
+      } else {
+        toast.error("Couldn't upload that photo — try again.");
+      }
+    }
+  }
+
   const pendingCount = items.length - Object.keys(confirmed).length;
 
   return (
@@ -200,6 +271,8 @@ export default function SupplierCheckin() {
                     confirmedStatus={confirmed[item.supplierProductId] ?? null}
                     onConfirm={handleConfirmOne}
                     busy={busyIds.has(item.supplierProductId)}
+                    imageUploadState={imageUploads[item.supplierProductId]}
+                    onUploadImage={(file) => handleUploadImage(item, file)}
                   />
                 ))}
               </ul>
