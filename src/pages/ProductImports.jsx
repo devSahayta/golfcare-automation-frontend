@@ -35,6 +35,14 @@ const DRAFT_STATUS = {
   EXPIRED: { label: "Expired", variant: "neutral" },
 };
 
+const IMAGE_FILTERS = [
+  { value: "", label: "All pending" },
+  { value: "both", label: "Has image & description" },
+  { value: "image_only", label: "Image only" },
+  { value: "description_only", label: "Description only" },
+  { value: "none", label: "Missing both" },
+];
+
 const BATCH_STATUS = {
   PENDING_EXTRACTION: { label: "Parsing document…", variant: "info" },
   PROCESSING: { label: "In progress", variant: "info" },
@@ -179,7 +187,7 @@ function DraftCard({ draft, busy, onOpen, onApprove, onReject }) {
   );
 }
 
-function DraftsQueue({ items, loading, error, busyId, onOpen, onDecide }) {
+function DraftsQueue({ items, loading, error, busyId, onOpen, onDecide, filtered }) {
   if (loading) {
     return (
       <div className="space-y-3">
@@ -197,7 +205,12 @@ function DraftsQueue({ items, loading, error, busyId, onOpen, onDecide }) {
     );
   }
   if (items.length === 0) {
-    return (
+    return filtered ? (
+      <EmptyState
+        title="No drafts match this filter"
+        description='Try a different image/description filter, or switch back to "All pending".'
+      />
+    ) : (
       <EmptyState
         title="Nothing waiting for approval"
         description="New products — from a supplier mentioning one in chat, or a bulk catalog import — show up here before they go live on Shopify."
@@ -558,11 +571,18 @@ export default function ProductImports() {
   const [draftStatus, setDraftStatus] = useState("");
   const [draftPage, setDraftPage] = useState(1);
   const [batchPage, setBatchPage] = useState(1);
+  const [queueImageFilter, setQueueImageFilter] = useState("");
+  const [queuePage, setQueuePage] = useState(1);
 
   const summary = useKeyedFetch(`summary|${refreshTick}`, () => fetchProductImportSummary());
 
-  const queue = useKeyedFetch(`queue|${refreshTick}`, () =>
-    fetchProductDrafts({ status: "PENDING", limit: 50 }),
+  const queue = useKeyedFetch(`queue|${queueImageFilter}|${queuePage}|${refreshTick}`, () =>
+    fetchProductDrafts({
+      status: "PENDING",
+      page: queuePage,
+      limit: LIMIT,
+      ...(queueImageFilter && { imageFilter: queueImageFilter }),
+    }),
   );
 
   const drafts = useKeyedFetch(`drafts|${draftStatus}|${draftPage}|${refreshTick}`, () =>
@@ -648,9 +668,9 @@ export default function ProductImports() {
             >
               <t.icon className="h-4 w-4" />
               {t.label}
-              {t.id === "queue" && queue.data?.total > 0 && (
+              {t.id === "queue" && s?.pendingDrafts > 0 && (
                 <span className="ml-1 rounded-full bg-gold-300/40 px-1.5 text-xs text-gold-600">
-                  {queue.data.total}
+                  {s.pendingDrafts}
                 </span>
               )}
             </button>
@@ -664,14 +684,34 @@ export default function ProductImports() {
 
       <div className="mt-5">
         {tab === "queue" && (
-          <DraftsQueue
-            items={queue.data?.data || []}
-            loading={queue.loading}
-            error={queue.error}
-            busyId={busyId}
-            onOpen={setSelectedDraft}
-            onDecide={decide}
-          />
+          <>
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <select
+                value={queueImageFilter}
+                onChange={(e) => {
+                  setQueueImageFilter(e.target.value);
+                  setQueuePage(1);
+                }}
+                className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400"
+              >
+                {IMAGE_FILTERS.map((f) => (
+                  <option key={f.value} value={f.value}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <DraftsQueue
+              items={queue.data?.data || []}
+              loading={queue.loading}
+              error={queue.error}
+              busyId={busyId}
+              onOpen={setSelectedDraft}
+              onDecide={decide}
+              filtered={Boolean(queueImageFilter)}
+            />
+            <Pager page={queuePage} totalPages={queue.data?.totalPages} onPage={setQueuePage} />
+          </>
         )}
 
         {tab === "drafts" && (
