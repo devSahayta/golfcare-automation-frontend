@@ -145,9 +145,19 @@ function ApprovalButtons({ busy, onApprove, onReject }) {
   );
 }
 
-function DraftCard({ draft, busy, onOpen, onApprove, onReject }) {
+function DraftCard({ draft, busy, onOpen, onApprove, onReject, selectable, selectDisabled, selected, onToggleSelect }) {
   return (
     <div className="flex flex-col gap-4 rounded-xl border border-gray-200 bg-white p-5 sm:flex-row">
+      {selectable && (
+        <input
+          type="checkbox"
+          checked={selected}
+          disabled={selectDisabled}
+          onChange={() => onToggleSelect(draft.id)}
+          onClick={(e) => e.stopPropagation()}
+          className="mt-1 h-4 w-4 shrink-0 self-start rounded border-gray-300 text-fairway-700 focus:ring-fairway-500 disabled:opacity-50"
+        />
+      )}
       {draft.imageUrl ? (
         <img
           src={draft.imageUrl}
@@ -187,7 +197,21 @@ function DraftCard({ draft, busy, onOpen, onApprove, onReject }) {
   );
 }
 
-function DraftsQueue({ items, loading, error, busyId, onOpen, onDecide, filtered }) {
+function DraftsQueue({
+  items,
+  loading,
+  error,
+  busyId,
+  onOpen,
+  onDecide,
+  filtered,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
+  bulkBusy,
+  bulkProgress,
+  onBulkApprove,
+}) {
   if (loading) {
     return (
       <div className="space-y-3">
@@ -217,8 +241,54 @@ function DraftsQueue({ items, loading, error, busyId, onOpen, onDecide, filtered
       />
     );
   }
+
+  const allOnPageSelected = items.every((d) => selectedIds.has(d.id));
+  const selectedCount = items.filter((d) => selectedIds.has(d.id)).length;
+
   return (
     <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5">
+        <label className="flex items-center gap-2 text-sm text-gray-600">
+          <input
+            type="checkbox"
+            checked={allOnPageSelected}
+            disabled={bulkBusy}
+            onChange={() => onToggleSelectAll(items.map((d) => d.id))}
+            className="h-4 w-4 rounded border-gray-300 text-fairway-700 focus:ring-fairway-500 disabled:opacity-50"
+          />
+          Select all on this page
+        </label>
+        {selectedCount > 0 && (
+          <div className="flex items-center gap-3">
+            {bulkBusy && bulkProgress ? (
+              <div className="flex items-center gap-2">
+                <div className="h-2 w-32 overflow-hidden rounded-full bg-gray-100">
+                  <div
+                    className="h-full rounded-full bg-fairway-600 transition-all"
+                    style={{ width: `${(bulkProgress.done / bulkProgress.total) * 100}%` }}
+                  />
+                </div>
+                <span className="text-xs text-gray-500">
+                  Approving {bulkProgress.done}/{bulkProgress.total}…
+                </span>
+                <span className="text-xs font-medium text-gold-600">Don't close or refresh this tab</span>
+              </div>
+            ) : (
+              <>
+                <span className="text-sm text-gray-500">{selectedCount} selected</span>
+                <button
+                  onClick={onBulkApprove}
+                  disabled={bulkBusy}
+                  className="rounded-lg bg-fairway-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-fairway-800 disabled:opacity-50"
+                >
+                  {`Approve ${selectedCount}`}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
       {items.map((d) => (
         <DraftCard
           key={d.id}
@@ -227,6 +297,10 @@ function DraftsQueue({ items, loading, error, busyId, onOpen, onDecide, filtered
           onOpen={() => onOpen(d)}
           onApprove={() => onDecide(d.id, "approve")}
           onReject={() => onDecide(d.id, "reject")}
+          selectable
+          selectDisabled={bulkBusy}
+          selected={selectedIds.has(d.id)}
+          onToggleSelect={onToggleSelect}
         />
       ))}
     </div>
@@ -573,6 +647,31 @@ export default function ProductImports() {
   const [batchPage, setBatchPage] = useState(1);
   const [queueImageFilter, setQueueImageFilter] = useState("");
   const [queuePage, setQueuePage] = useState(1);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  // {done, total} while a bulk approval is running — drives the progress
+  // bar; null the rest of the time.
+  const [bulkProgress, setBulkProgress] = useState(null);
+  const clearSelection = () => setSelectedIds(new Set());
+
+  // Each approval in a bulk run is its own request, driven by a loop that
+  // lives in this tab (see handleBulkApprove) — there's no server-side job
+  // continuing it. Closing/reloading mid-run stops everything from that
+  // point on; whatever's already shown as done stays done (each item's
+  // Shopify publish + DB update already fully completed before the
+  // progress bar advances past it), but anything not yet reached just
+  // never runs. This is the browser's own native "leave site?" prompt,
+  // not a custom one — browsers ignore a custom message here and show
+  // their own wording regardless of what's set.
+  useEffect(() => {
+    if (!bulkBusy) return;
+    const handler = (e) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [bulkBusy]);
 
   const summary = useKeyedFetch(`summary|${refreshTick}`, () => fetchProductImportSummary());
 
@@ -613,6 +712,69 @@ export default function ProductImports() {
       toast.error(message);
     } finally {
       setBusyId(null);
+    }
+  };
+
+  function toggleSelect(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll(visibleIds) {
+    setSelectedIds((prev) => {
+      const allSelected = visibleIds.length > 0 && visibleIds.every((id) => prev.has(id));
+      if (allSelected) {
+        const next = new Set(prev);
+        visibleIds.forEach((id) => next.delete(id));
+        return next;
+      }
+      return new Set([...prev, ...visibleIds]);
+    });
+  }
+
+  // Loops the same single-draft approve endpoint the one-at-a-time button
+  // already uses (decide(), above) — sequentially, one at a time, so each
+  // completed item updates bulkProgress and the staff actually sees it
+  // moving instead of one opaque "Working…" for however long the whole
+  // batch takes. One draft failing (already decided, Shopify hiccup,
+  // etc.) doesn't stop the rest — it's just counted at the end.
+  const handleBulkApprove = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Approve and publish ${ids.length} product(s) to Shopify?`)) return;
+
+    setBulkBusy(true);
+    setActionError(null);
+    setBulkProgress({ done: 0, total: ids.length });
+
+    let approvedCount = 0;
+    const failed = [];
+    try {
+      for (let i = 0; i < ids.length; i++) {
+        try {
+          await approveProductDraft(ids[i]);
+          approvedCount++;
+        } catch (err) {
+          failed.push({ id: ids[i], error: err.response?.data?.error || err.message });
+        }
+        setBulkProgress({ done: i + 1, total: ids.length });
+      }
+
+      if (failed.length === 0) {
+        toast.success(`${approvedCount} product(s) approved and published to Shopify.`);
+      } else {
+        console.error("Bulk approve failures:", failed);
+        toast.error(`${approvedCount} approved, ${failed.length} couldn't be approved — open them individually to see why.`);
+      }
+      setSelectedIds(new Set());
+      setRefreshTick((t) => t + 1);
+    } finally {
+      setBulkBusy(false);
+      setBulkProgress(null);
     }
   };
 
@@ -659,7 +821,10 @@ export default function ProductImports() {
           {TABS.map((t) => (
             <button
               key={t.id}
-              onClick={() => setTab(t.id)}
+              onClick={() => {
+                setTab(t.id);
+                clearSelection();
+              }}
               className={`flex items-center gap-1.5 border-b-2 px-1 py-2.5 text-sm font-medium transition-colors ${
                 tab === t.id
                   ? "border-fairway-700 text-fairway-900"
@@ -691,6 +856,7 @@ export default function ProductImports() {
                 onChange={(e) => {
                   setQueueImageFilter(e.target.value);
                   setQueuePage(1);
+                  clearSelection();
                 }}
                 className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 focus:border-fairway-400 focus:outline-none focus:ring-1 focus:ring-fairway-400"
               >
@@ -709,8 +875,21 @@ export default function ProductImports() {
               onOpen={setSelectedDraft}
               onDecide={decide}
               filtered={Boolean(queueImageFilter)}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              onToggleSelectAll={toggleSelectAll}
+              bulkBusy={bulkBusy}
+              bulkProgress={bulkProgress}
+              onBulkApprove={handleBulkApprove}
             />
-            <Pager page={queuePage} totalPages={queue.data?.totalPages} onPage={setQueuePage} />
+            <Pager
+              page={queuePage}
+              totalPages={queue.data?.totalPages}
+              onPage={(p) => {
+                setQueuePage(p);
+                clearSelection();
+              }}
+            />
           </>
         )}
 
