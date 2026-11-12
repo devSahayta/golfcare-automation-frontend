@@ -1,4 +1,10 @@
 // src/components/Sidebar.jsx
+//
+// Phase 5 addition: "Pricing Config" and "Negotiations" nav items, placed
+// right after Customers — pricing/negotiation decisions are about
+// members, so they sit next to the Customers link rather than buried
+// under Settings.
+
 import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
@@ -15,6 +21,8 @@ import {
   SettingsIcon,
   CloseIcon,
   InboxDownloadIcon,
+  TagIcon,
+  ScaleIcon,
 } from "./icons";
 
 // Chevron icon — inline so we don't need to import a new one
@@ -54,6 +62,8 @@ const NAV_ITEMS = [
   { to: "/products", label: "Products", icon: BagIcon },
   { to: "/orders", label: "Orders", icon: ReceiptIcon },
   { to: "/customers", label: "Customers", icon: UsersIcon },
+  { to: "/pricing-config", label: "Pricing Config", icon: TagIcon },
+  { to: "/negotiations", label: "Negotiations", icon: ScaleIcon },
   { to: "/suppliers", label: "Suppliers", icon: TruckIcon },
   { to: "/product-imports", label: "Product Imports", icon: InboxDownloadIcon },
   {

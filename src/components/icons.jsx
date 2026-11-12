@@ -2,6 +2,9 @@
 //
 // Small stroke icons, same hand, same weight as Login.jsx's GolfFlagMark —
 // deliberately not pulling in an icon library for eight glyphs.
+//
+// Phase 5 addition: TagIcon (Pricing Config nav) and ScaleIcon
+// (Negotiations nav) appended at the end, same style as everything above.
 
 function base(className) {
   return {
@@ -393,6 +396,55 @@ export function InboxDownloadIcon({ className = "h-[18px] w-[18px]" }) {
         strokeWidth="1.6"
         strokeLinecap="round"
         strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// ── Phase 5 additions ──────────────────────────────────────────────────
+
+export function TagIcon({ className = "h-[18px] w-[18px]" }) {
+  return (
+    <svg {...base(className)}>
+      <path
+        d="M11.5 4h5A1.5 1.5 0 0 1 18 5.5v5a1.5 1.5 0 0 1-.44 1.06l-7 7a1.5 1.5 0 0 1-2.12 0l-5-5a1.5 1.5 0 0 1 0-2.12l7-7A1.5 1.5 0 0 1 11.5 4Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <circle cx="14.5" cy="8.5" r="1.1" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function ScaleIcon({ className = "h-[18px] w-[18px]" }) {
+  return (
+    <svg {...base(className)}>
+      <path
+        d="M12 3.5v16"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M6.5 20h11"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M12 6 5.5 6l-2 5a3.5 3.5 0 0 0 7 0L8.5 6.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      <path
+        d="M12 6l6.5 0 2 5a3.5 3.5 0 0 1-7 0L15.5 6.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
       />
     </svg>
   );

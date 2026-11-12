@@ -1,4 +1,6 @@
 //src/App.jsx
+//
+// Phase 5 addition: /pricing-config and /negotiations routes.
 
 import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
@@ -19,6 +21,8 @@ import AuditLog from "./pages/AuditLog";
 import AgentUsage from "./pages/AgentUsage";
 import Campaigns from "./pages/Campaigns";
 import BroadcastCampaigns from "./pages/BroadcastCampaigns";
+import PricingConfig from "./pages/PricingConfig";
+import Negotiations from "./pages/Negotiations";
 import Settings from "./pages/Settings";
 import SupplierCheckin from "./pages/SupplierCheckin";
 import NotFound from "./pages/NotFound";
@@ -104,6 +108,8 @@ export default function App() {
           <Route path="/products" element={<Products />} />
           <Route path="/orders" element={<Orders />} />
           <Route path="/customers" element={<Customers />} />
+          <Route path="/pricing-config" element={<PricingConfig />} />
+          <Route path="/negotiations" element={<Negotiations />} />
           <Route path="/suppliers" element={<Suppliers />} />
           <Route path="/product-imports" element={<ProductImports />} />
           <Route path="/campaigns" element={<Campaigns />} />
