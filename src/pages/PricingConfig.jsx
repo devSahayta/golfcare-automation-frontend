@@ -179,6 +179,29 @@ function FieldGroup({ title, description, children, dirty }) {
   );
 }
 
+// Plain-language reasoning behind a computeEnvelope result's memberPrice —
+// built from fields the preview endpoint already returns (_full.floorPrice,
+// _full.belowFloorAtList), so staff see WHY a number came out the way it
+// did, not just the number itself. Mirrors the same cases the engine
+// itself branches on (see computeEnvelope.js): no cost data on record,
+// floor higher than list price entirely, floor overriding the flat
+// discount, or the plain flat-discount case with no override.
+function explainMemberPrice(result, basePct) {
+  const { listPrice, memberPrice, _full } = result;
+  const { floorPrice, belowFloorAtList } = _full;
+
+  if (floorPrice == null) {
+    return "This product has no cost price on record, so the margin floor can't be calculated. Without that, the system plays it safe: it applies the flat member discount but won't negotiate below it at all — there's no way to verify a lower price would still be profitable.";
+  }
+  if (belowFloorAtList) {
+    return `The margin floor (${formatCurrency(floorPrice)}) is actually higher than the list price itself (${formatCurrency(listPrice)}) — meaning even at full list price, with zero discount, this product doesn't clear the required margin. So no discount applies at all: the customer pays the full list price.`;
+  }
+  if (Math.round(memberPrice) === Math.round(floorPrice)) {
+    return `A flat ${basePct}% off the list price (${formatCurrency(listPrice)}) would have landed below the margin floor (${formatCurrency(floorPrice)}), so the floor price is used instead — "Floor wins" protecting margin, per the current floor-mode setting.`;
+  }
+  return `List price (${formatCurrency(listPrice)}) minus the flat ${basePct}% member discount works out to ${formatCurrency(memberPrice)}. That's comfortably above the margin floor (${formatCurrency(floorPrice)}), so the plain discount applies with no override needed.`;
+}
+
 // ---------------------------------------------------------------------
 
 const TIER_LABELS = {
@@ -830,7 +853,7 @@ export default function PricingConfig() {
         </div>
 
         {/* Preview impact panel */}
-        <div className="lg:sticky lg:top-6 lg:self-start">
+        <div className="lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:self-start lg:overflow-y-auto">
           <div className="rounded-xl border border-gray-200 bg-white p-5">
             <h3 className="mb-1 text-sm font-semibold text-gray-900">
               Preview impact
@@ -931,6 +954,51 @@ export default function PricingConfig() {
                     </p>
                   </div>
                 </div>
+                <div className="rounded-lg bg-gray-50 p-3 text-xs leading-relaxed text-gray-600">
+                  <p className="mb-1 font-medium text-gray-700">
+                    Why this is the member price
+                  </p>
+                  <p>
+                    {explainMemberPrice(
+                      previewResult.after,
+                      d["member.basePct"],
+                    )}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-fairway-100 bg-fairway-50 p-3 text-xs text-fairway-900">
+                  <p className="mb-1 font-medium">What the agent would say</p>
+                  <p className="leading-relaxed">
+                    "This is listed at{" "}
+                    {formatCurrency(previewResult.after.listPrice)} — as a
+                    member, you get it for{" "}
+                    {formatCurrency(previewResult.after.memberPrice)}."
+                  </p>
+                </div>
+
+                <div className="rounded-lg bg-gray-50 p-3 text-xs text-gray-600">
+                  <p className="mb-1.5 font-medium text-gray-700">
+                    If the customer pushes back on price
+                  </p>
+                  {previewResult.after.thinRoom ? (
+                    <p className="text-gray-500">
+                      No real room to give — holds firm at{" "}
+                      {formatCurrency(previewResult.after.memberPrice)}.
+                    </p>
+                  ) : (
+                    <ul className="space-y-0.5">
+                      {previewResult.after.suggestedSteps.map((price, i) => (
+                        <li key={i}>
+                          Step {i + 1}: {formatCurrency(price)}
+                          {i === previewResult.after.suggestedSteps.length - 1
+                            ? " (floor — the lowest it will ever go)"
+                            : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
                 <div className="rounded-lg bg-gray-50 p-3 text-xs text-gray-500">
                   <p>
                     Floor:{" "}
@@ -948,11 +1016,6 @@ export default function PricingConfig() {
                           .join(", ")
                       : "none"}
                   </p>
-                  {previewResult.after.thinRoom && (
-                    <p className="mt-1 text-amber-600">
-                      Thin room — no negotiation steps offered.
-                    </p>
-                  )}
                 </div>
               </div>
             )}
