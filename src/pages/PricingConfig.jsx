@@ -273,6 +273,15 @@ export default function PricingConfig() {
       return { ...d, [key]: arr };
     });
   }
+  // For an array-of-objects field, e.g. lever.agedStock.tiers — updates
+  // one field of one tier without touching the others.
+  function setTierField(key, tiersField, index, field, value) {
+    setDraft((d) => {
+      const tiers = [...(d[key]?.[tiersField] || [])];
+      tiers[index] = { ...tiers[index], [field]: value };
+      return { ...d, [key]: { ...d[key], [tiersField]: tiers } };
+    });
+  }
 
   async function handleSave() {
     if (dirtyKeys.length === 0) return;
@@ -558,6 +567,8 @@ export default function PricingConfig() {
               "lever.tier",
               "lever.ltv",
               "lever.bundle",
+              "lever.overstockQty",
+              "lever.agedStock",
             ].some((k) => dirtySet.has(k))}
           >
             <FieldRow
@@ -724,6 +735,80 @@ export default function PricingConfig() {
                 suffix="%"
                 width="w-20"
               />
+            </FieldRow>
+            <FieldRow
+              label="Overstock — min quantity"
+              hint="Confirmed stock on hand needed to qualify"
+              info="How many units a supplier needs to have confirmed on hand (typed in during a check-in) before this product counts as overstocked. Only variants with a real supplier-typed count are ever checked — if nobody's typed a number for this variant, this lever simply never fires for it."
+              isDefault={isDefaultKey("lever.overstockQty")}
+            >
+              <NumberInput
+                value={d["lever.overstockQty"]?.minQuantity}
+                onChange={(v) =>
+                  setObjectField("lever.overstockQty", "minQuantity", v)
+                }
+                width="w-20"
+              />
+            </FieldRow>
+            <FieldRow
+              label="Overstock — extra room"
+              info="Extra % discount room granted when the overstock quantity condition above is met."
+              isDefault={isDefaultKey("lever.overstockQty")}
+            >
+              <NumberInput
+                value={d["lever.overstockQty"]?.pct}
+                onChange={(v) => setObjectField("lever.overstockQty", "pct", v)}
+                suffix="%"
+                width="w-20"
+              />
+            </FieldRow>
+            <FieldRow
+              label="Aged stock — tier 1: days / extra room"
+              hint="Days continuously confirmed in stock before this tier kicks in"
+              info="How many days a variant has to have been continuously confirmed in stock (since it last went from not-in-stock to in-stock) before this tier's extra room applies. Tiers don't stack — only the highest day-threshold actually reached counts."
+              isDefault={isDefaultKey("lever.agedStock")}
+            >
+              <div className="flex items-center gap-1.5">
+                <NumberInput
+                  value={d["lever.agedStock"]?.tiers?.[0]?.days}
+                  onChange={(v) =>
+                    setTierField("lever.agedStock", "tiers", 0, "days", v)
+                  }
+                  width="w-16"
+                />
+                <NumberInput
+                  value={d["lever.agedStock"]?.tiers?.[0]?.pct}
+                  onChange={(v) =>
+                    setTierField("lever.agedStock", "tiers", 0, "pct", v)
+                  }
+                  suffix="%"
+                  width="w-20"
+                />
+              </div>
+            </FieldRow>
+            <FieldRow
+              label="Aged stock — tier 2: days / extra room"
+              hint="A longer-sitting tier — needs to clear this many days instead"
+              info="A second, longer tier — a variant that's been sitting confirmed in stock for this many days gets this (usually bigger) extra room instead of tier 1's."
+              isDefault={isDefaultKey("lever.agedStock")}
+            >
+              <div className="flex items-center gap-1.5">
+                <NumberInput
+                  value={d["lever.agedStock"]?.tiers?.[1]?.days}
+                  onChange={(v) =>
+                    setTierField("lever.agedStock", "tiers", 1, "days", v)
+                  }
+                  width="w-16"
+                />
+                <NumberInput
+                  value={d["lever.agedStock"]?.tiers?.[1]?.pct}
+                  onChange={(v) =>
+                    setTierField("lever.agedStock", "tiers", 1, "pct", v)
+                  }
+                  suffix="%"
+                  width="w-20"
+                />
+              </div>
             </FieldRow>
           </FieldGroup>
 
